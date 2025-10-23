@@ -1,0 +1,66 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+
+# Jupyter Notebooks
+.ipynb_checkpoints
+*/.ipynb_checkpoints/*
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+*.out
+
+# Cache
+.cache/
+*.mypy_cache/
+*.pytest_cache/
+*.tox/
+*.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+
+# IDE / Editor files
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Data files (optional — comment out if you want to version datasets)
+# data/
+# datasets/
+# *.csv
+# *.tsv
+# *.h5
+# *.npy
+# *.npz
+# *.pkl
+# *.joblib
+
+# Checkpoints / Model weights
+checkpoints/
+models/
+*.pt
+*.pth
+*.ckpt
+
+# Jupyter
+.DS_Store
+Thumbs.db
