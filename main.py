@@ -72,10 +72,10 @@ Features explanation: <br>
 """
 
 
-def load_file(path) -> pd.DataFrame:
+def load_file(datafile: str) -> pd.DataFrame:
     """
     Načtení dat z CSV souboru do pandas DataFrame
-    :param file: CSV soubor k načtení
+    :param datafile (str): 
     :return:
         rdf - pandas raw DataFrame
         df - pandas kopie DataFrame
@@ -84,9 +84,9 @@ def load_file(path) -> pd.DataFrame:
     # Nalezení cesty, otevírání souboru, oznámení nenačtení
 
     try:
-        #path = os.getcwd()
+        cwd = os.getcwd()
         #rdf = pd.read_csv(f"{path}/liver-disease_data.csv")
-        rdf = pd.read_csv(path)
+        rdf = pd.read_csv(f"{cwd}/{datafile}")
         df = rdf.copy(deep=True)
         
         # print(f'Soubor {path} byl úspěšně načtený. \n')
