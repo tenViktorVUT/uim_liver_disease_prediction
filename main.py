@@ -11,11 +11,9 @@ Filip Sedlár
 VUT: 
  
 Matúš Smolka
-VUT: 
-Viktor Morovič
-Filip Sedlár
-Matúš Smolka
+VUT: 257044@vutbr.cz
 """
+
 
 # importing dependencies
 # built-in libs
@@ -23,13 +21,18 @@ import os
 import time
 
 # NN
+
 import tqdm
 import shap
 
+
+# Basic data analytics libraries
 # Basic data analytics libraries
 import numpy as np
 import pandas as pd
 import seaborn as sns
+import matplotlib.pyplot as plt
+import logging
 import matplotlib.pyplot as plt
 
 # Principal component analysis
@@ -46,13 +49,14 @@ from sklearn.metrics import (
     RocCurveDisplay,
     f1_score
 )
+
 from sklearn.decomposition import PCA
+from torch.utils.hipify.hipify_python import preprocessor
 
 # Classificator XGBoost
-# from xgboost import XGBClassifier
+from xgboost import XGBClassifier
 
 # pozrieť jednotlivé scipy moduly pre rýchlejšie načítanie
-
 
 """
 Features explanation: <br>
@@ -70,6 +74,9 @@ Features explanation: <br>
 
 ***classification*** - patient is sick / healthy
 """
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
 
 
 def load_file(datafile: str) -> pd.DataFrame:
@@ -95,8 +102,6 @@ def load_file(datafile: str) -> pd.DataFrame:
         # TEST PRINT
         # print(df.head()) 
         return rdf, df
-    
-   
    
     except FileNotFoundError:
         print(f'Datový soubor {path} nebyl nalezen.')
@@ -231,6 +236,59 @@ def fix_age(df):
     df.loc[df['Age'] > 110, 'Age'] = np.nan
     return df
 
+def fill_miss_values(df):
+    """
+    Doplňuje chybějící hodnoty (NaN) pomocí KNNImputer pro numerická data a
+    nejčastější hodnotu (modus) pro kategorická.
+    :param df: DataFrame
+    :return:
+        df_imputed - DataFrame s doplněnými hodnotami
+    """
+
+    logger.info('Provádím doplnění NaN hodnot...')
+    # Oddělení hodnoty kterou nechci upravovat
+    selector_col = None
+    if 'Selector' in df.columns:
+        df_target = df['Selector']
+        df_features = df.drop('Selector', axis=1)
+    else:
+        df_features = df
+
+    # Rozdělení sloupců na numerická a kategorické
+    categorical_features = df_features.select_dtypes(include=['object', 'category']).columns.tolist()
+    numerical_features = df_features.select_dtypes(include=['number']).columns.tolist()
+
+    logger.info(f'Nalezeno {len(numerical_features)} numerických příznaků.\n')
+    logger.info(f'Nalezeno {len(categorical_features)} kategorických příznaků.\n')
+
+    # Pipelines
+    numerical_transformer = Pipeline(steps=[
+        ('impute', KNNImputer(n_neighbors=5))
+    ]) # 5 Sousedů
+    categorical_transformer = Pipeline(steps=[
+        ('impute', SimpleImputer(strategy='most_frequent'))
+    ])
+
+    # Kombinace transformací
+    preproc = ColumnTransformer(transformers=[
+        ('num', numerical_transformer, numerical_features),
+        ('cat', categorical_transformer, categorical_features)
+        ], remainder='passthrough')
+
+    # Pozor, preprocessor vrací NumPy
+    df_imputed_array = preproc.fit_transform(df_features)
+    df_imputed = pd.DataFrame(df_imputed_array,
+                              columns=df_features.columns,
+                              index=df_features.index)
+
+    # Připojení 'Selector'
+    if selector_col is not None:
+        df_imputed['Selector'] = selector_col
+
+    logger.info('Doplňování chybějících hodnot dokončeno.')
+
+    return df_imputed
+
 
 def split_data(data: pd.DataFrame) -> pd.DataFrame:
     """
@@ -263,12 +321,12 @@ if __name__ == "__main__":
         print('\nKontrola a oprava záporných hodnot...')
         # Seznam sloupců kde zápor je nemožný
         columns_to_fix = ['Age', 'TB', 'DB', 'Alkphos', 'Sgpt', 'Sgot', 'TP', 'ALB', 'A/G Ratio']
-        fix_age(df)
+
 
         # Iterativní oprava pro každý relevantní sloupec
         for column in columns_to_fix:
             if column in df.columns:
-                data = negativ_num_correct(df, column)
+                df = negativ_num_correct(df, column)
             else:
                 print(f'Sloupec {column} nebyl v datech nalezen.')
         print('\nKontrola záporných hodnot a oprava dokončena.')
@@ -279,9 +337,12 @@ if __name__ == "__main__":
         # Odstranění řádků s chybějící cílovou hodnotou
         df = del_missing(df)
 
+        # Doplnění chybějících hodnot
+        df = fill_miss_values(df)
+
         print('\nPreprocessing dokončen.')
         print('Počet chybějících hodnot (NaN) v každém sloupci po základním zpracování:')
-        print(df.isnull().sum())
+        print(df.isnull().sum()) # Správně nuly...
 
         # Vizualizace rozdělení pohlaví
         print('Vytváření vizualizace pro rozdělení pohlaví...')
@@ -296,52 +357,6 @@ if __name__ == "__main__":
         plt.xlabel('Pohlaví (0=Muž, 1=Žena)')
         plt.ylabel('Počet')
         plt.show()
-        """ uloženie dát do novej tabulky pre okometrickú kontrolu"""
-        #df.to_csv('liver-disease_data_edited.csv', index=False)
-        """grafovanie"""
-        #graf_shape(df)
-        #get_corelation_matrix(df)
-
-
-
-# Loading data and analysis
-def load_data(filename:str) -> pd.DataFrame:
-    """
-    Loads csv data into a pandas Dataframe
-    
-    :return pd.Dataframe:
-    """
-    
-    # Geetting path to load data
-    path = os.getcwd()
-    
-    # loading raw DataFrame
-    rdf = pd.read_csv(f"{path}/{filename}")
-    # Creating deep copy and replacing negative (non-sense) values
-    df = rdf.copy(deep=True)
-
-
-    def clean_data(raw: pd.DataFrame) -> pd.DataFrame:
-        """
-        Helper function for cleaning strong outliers in Dataframe
-        
-        :param (pd.DataFrame) raw: raw unprocessed DataFrame
-        :return pd.DataFrame:  pre-processed DataFrame  
-        """
-        
-        # Assigning gender discrete values 
-        _ = {"Male": 0, "Female": 1}
-        df['Gender'] = df['Gender'].replace(_)
-        
-        # Replacing all negative values with NaN
-        df[df < 0] = np.nan
-        
-        return df
-    
-    
-    df = clean_data(raw=df)
-    
-    return df
 
 
 
