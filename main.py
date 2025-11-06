@@ -4,9 +4,14 @@ LIVER DISEASE PREDICTION
 This project was created for BPC-UIM (Umělá inteligence v medícíne) class @ VUT Brno.
 
 Created by
-Viktor Morovič 
-Filip Sedlár 
-Matúš Smolka 
+Viktor Morovič
+VUT: 257026@vutbr.cz
+ 
+Filip Sedlár
+VUT: 
+ 
+Matúš Smolka
+VUT: 
 """
 
 # importing dependencies
@@ -28,7 +33,6 @@ from sklearn.decomposition import PCA
 
 # pozrieť jednotlivé scipy moduly pre rýchlejšie načítanie
 
-#Loading data and analysis
 
 """
 Features explanation: <br>
@@ -47,27 +51,62 @@ Features explanation: <br>
 ***classification*** - patient is sick / healthy
 """
 
-# Geetting path to load data
-path = os.getcwd()
-# loading raw DataFrame
-rdf = pd.read_csv(f"{path}/liver-disease_data.csv")
+# Loading data and analysis
+def load_data(filename:str) -> pd.DataFrame:
+    """
+    Loads csv data into a pandas Dataframe
+    
+    :return pd.Dataframe:
+    """
+    
+    # Geetting path to load data
+    path = os.getcwd()
+    
+    # loading raw DataFrame
+    rdf = pd.read_csv(f"{path}/{filename}")
+    # Creating deep copy and replacing negative (non-sense) values
+    df = rdf.copy(deep=True)
 
-# Creating deep copy and replacing negative (non-sense) values
-df = rdf.copy(deep=True)
 
-# Assigning gender discrete values 
-_ = {"Male": 0, "Female": 1}
-df['Gender'] = df['Gender'].replace(_)
-df[df < 0] = np.nan
+    def clean_data(raw: pd.DataFrame) -> pd.DataFrame:
+        """
+        Helper function for cleaning strong outliers in Dataframe
+        
+        :param (pd.DataFrame) raw: raw unprocessed DataFrame
+        :return pd.DataFrame:  pre-processed DataFrame  
+        """
+        
+        # Assigning gender discrete values 
+        _ = {"Male": 0, "Female": 1}
+        df['Gender'] = df['Gender'].replace(_)
+        
+        # Replacing all negative values with NaN
+        df[df < 0] = np.nan
+        
+        return df
+    
+    
+    df = clean_data(raw=df)
+    
+    return df
 
-"""
-sns.histplot(
-    data=df,
-    x='Gender',
-    discrete=True,
-    hue=rdf['Gender'], 
-    shrink = .8).set_xticks([0,1])
-"""
 
-# We can see missing entries
-# df['Gender'].unique()
+def split_data(data: pd.DataFrame) -> pd.DataFrame:
+    """
+    Splits data into training and validation data
+    
+    :param (pd.DataFrame) data: original data
+    :return train_x: training data
+    :return train_y: training for error
+    :return val_x: validation data
+    :return val_y: validation error
+    """
+    
+    # pridať train_test_split
+    pass
+
+
+
+if __name__ == "__main__":
+    # Testing functions and algo here
+    load_data("liver-disease_data.csv")
