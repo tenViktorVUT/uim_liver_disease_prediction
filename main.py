@@ -279,7 +279,7 @@ def split_data(
     # Getting all columns names
     features = data.columns
     # Removing our Y from the list -> Selector
-    features = features.remove('Selector')
+    features = [col for col in features if col != 'Selector']
     
     # Assigning X, Y
     Y = data.Selector
