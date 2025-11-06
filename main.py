@@ -1,3 +1,12 @@
+#%%%
+
+#FIXME: FILL MISSING REMOVES SELECTOR COLUMN
+#TODO: TRAIN_TEST_SPLIT
+#TODO: OSEKAŤ NEFYZIOLOGICKÉ HODNOTY
+#TODO: ZJEDNOTIŤ DOKUMENTÁCIU
+# TODO: MODEL A VÝBER HYPERPARAMETROV
+
+
 """
 LIVER DISEASE PREDICTION
 
@@ -14,19 +23,17 @@ Matúš Smolka
 VUT: 257044@vutbr.cz
 """
 
-
 # importing dependencies
 # built-in libs
 import os
 import time
 
-# NN
 
+# NN
 import tqdm
 import shap
 
 
-# Basic data analytics libraries
 # Basic data analytics libraries
 import numpy as np
 import pandas as pd
@@ -54,7 +61,7 @@ from sklearn.decomposition import PCA
 from torch.utils.hipify.hipify_python import preprocessor
 
 # Classificator XGBoost
-from xgboost import XGBClassifier
+# from xgboost import XGBClassifier
 
 # pozrieť jednotlivé scipy moduly pre rýchlejšie načítanie
 
@@ -75,28 +82,29 @@ Features explanation: <br>
 ***classification*** - patient is sick / healthy
 """
 
+#%%%
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 
-def load_file(datafile: str) -> pd.DataFrame:
+def load_file(filename: str) -> pd.DataFrame:
     """
-    Načtení dat z CSV souboru do pandas DataFrame
-    :param datafile (str): 
+    Loads CSV data under filename into 2 pandas DataFrames
+    :param (str) filename: name of the file
     :return:
-        rdf - pandas raw DataFrame
-        df - pandas kopie DataFrame
+        rdf - raw DataFrame
+        df - deep copy DataFrame
     """
-
-    # Nalezení cesty, otevírání souboru, oznámení nenačtení
 
     try:
+        # Finding path
         cwd = os.getcwd()
-        #rdf = pd.read_csv(f"{path}/liver-disease_data.csv")
-        rdf = pd.read_csv(f"{cwd}/{datafile}")
-        df = rdf.copy(deep=True)
+        path = os.path.join(cwd,filename)
+        rdf = pd.read_csv(path)
         
-        # print(f'Soubor {path} byl úspěšně načtený. \n')
+        # Creates deep copy of df
+        df = rdf.copy(deep=True)
+        print(f'File {filename} loaded succesfully. \n')
         
         # print(f'Dataset obsahuje {df.shape[0]} řádků a {df.shape[1]} sloupců.')
         # TEST PRINT
@@ -104,72 +112,37 @@ def load_file(datafile: str) -> pd.DataFrame:
         return rdf, df
    
     except FileNotFoundError:
-        print(f'Datový soubor {path} nebyl nalezen.')
+        print(f'File {path} was not found in directory.')
         return None
 
-
-def reformat_final(df):
+#%%%
+def preprocess_data(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Překóduje 'Selector' na binární formát 0 a 1
-    Původní: 1 -> 1 (nemocný), 2 -> 0 (zdravý)
-    :param df: DataFrame
-    :return:
-        df - DataFrame s upraveným 'Selector'
+    Preprocesses data into a clean working DataFrame.
+    Takes in raw data frame and replaces non-sense values with
+    NaNs
+    :param (pd.DataFrame) df: unprocessed DataFrame
     """
-    print('\n Probíhá překódování sloupce "Selector"...')
+    
+    ### REFORMATTING SELECTOR OUTPUT INTO BINARY VALUES
     if 'Selector' not in df.columns:
-        print('Pozor! Sloupec "Selector" nebyl nalezen.')
-        return df
-
-    print('Původní unikátní hodnoty Selector:', df['Selector'].unique())
-
-    mapping = {1: 1, 2:0}
-    df['Selector'] = df['Selector'].map(mapping)
-
-    print(f'Sloupec "Selector" byl překódován. Nové unikátní hodnoty:', df['Selector'].unique())
-
-    return df
-
-
-def negativ_num_correct(df, column_name):
-    """
-    Identifikace a opravení záporných hodnot v sloupci.
-    Záporné hodnoty jsou nahrazeny NaN.
-    Vypsání počtu nalezených a pak opravených hodnot.
-    :param df: DataFrame, v kterém se bude konat oprava
-    :param column_name: Název sloupce k kontrole a opravě
-    :return: DataFrame s opravenými hodnotami
-    """
-
-    num_of_negativ = (df[column_name]<0).sum()
-
-    if num_of_negativ > 0:
-        # Nahrazení hodnot za NaN
-        df.loc[df[column_name] < 0, column_name] = np.nan
-        print(f'V sloupci {column_name} bylo nalezeno a opraveno {num_of_negativ} záporných hodnot. \n ')
-    else:
-        print(f'V sloupci {column_name} nebyly nalezeny žádné záporné hodnoty.\n')
-
-    return df
-
-
-def gender_recoding(df):
-    """
-    Překódování kategorické proměnné 'Gender' na číselné hodnoty
-    Mapování: "Male" -> 0, "Female" -> 1
-    :param df: DataFrame
-    :return:
-        df - DataFrame s překódováným pohlavím
-    """
-
-    print('Probíhá překódování sloupce "Gender"...')
-    if 'Gender' in df.columns:
-        gender_mapping = {"Male":0, "Female": 1}
-        df['Gender'] = df['Gender'].map(gender_mapping)
-        print('Sloupec "Gender" byl převeden na číselné hodnoty.')
-    else:
-        print('Pozor! Sloupec "Gender" nebyl nalezen.')
-
+        # raises error in case of missing selector column
+        raise NameError("Selector column missing in the DataFrame")
+    
+    # mapping binary values onto selector column
+    # 1: pathological 2->0:healthy
+    df['Selector'] = df['Selector'].map({1:1,2:0})
+    
+    
+    ### REPLACING NON-SENSE AGE
+    df.loc[df['Age'] > 110, 'Age'] = np.nan
+    
+    ### REFORMATTING GENDER INTO BINARY, DISCRETE VALUES
+    df['Gender'] = df['Gender'].map({'Male':0, 'Female':1})
+    
+    ### CORRECTING NEGATIVE VALUES
+    df[df<0] = np.nan
+    
     return df
 
 
@@ -194,7 +167,7 @@ def del_missing(df):
     print(f'Aktuální počet řádků v datasetu: {new_count}')
     return df
 
-def graf_shape(df):
+def graph_shape(df):
     """
     Stĺpec po stĺpci vytvorý grafy pre každý parameter aby sme mohly určiť rozloženie.
     Grafi sa zobrazujú jeden podruho vždy až po zatvorení predšlého grafu
@@ -226,15 +199,7 @@ def get_corelation_matrix(df):
     plt.title("Correlation Matrix of Biomarkers")
     plt.show()
     return None
-def fix_age(df):
-    """
-    zobere dataframe a postará sa o to aby tam všetci boli mladší než 110 rokov
-    :param df: DataFrame
-    :return:
-        dataframe z pozmenými hodnotami
-    """
-    df.loc[df['Age'] > 110, 'Age'] = np.nan
-    return df
+
 
 def fill_miss_values(df):
     """
@@ -304,6 +269,7 @@ def split_data(data: pd.DataFrame) -> pd.DataFrame:
     # pridať train_test_split
     pass
 
+#%%%
 # --- Hlavní skript ---
 if __name__ == "__main__":
 
@@ -311,32 +277,19 @@ if __name__ == "__main__":
     # Načtení souboru
     path = 'liver-disease_data.csv'
     rdf, df = load_file(path)
+    display(df)
 
+#%%%
     if df is not None:
 
-        # Překódování cílové proměnné
-        df = reformat_final(df)
+        df = preprocess_data(df=df)
+        display(df)
 
-        # Oprava fyziologicky nemožných hodnot (záporná data)
-        print('\nKontrola a oprava záporných hodnot...')
-        # Seznam sloupců kde zápor je nemožný
-        columns_to_fix = ['Age', 'TB', 'DB', 'Alkphos', 'Sgpt', 'Sgot', 'TP', 'ALB', 'A/G Ratio']
-
-
-        # Iterativní oprava pro každý relevantní sloupec
-        for column in columns_to_fix:
-            if column in df.columns:
-                df = negativ_num_correct(df, column)
-            else:
-                print(f'Sloupec {column} nebyl v datech nalezen.')
-        print('\nKontrola záporných hodnot a oprava dokončena.')
-
-        # Překódování pohlaví
-        df = gender_recoding(df)
-
+#%%%
         # Odstranění řádků s chybějící cílovou hodnotou
         df = del_missing(df)
-
+        display(df)
+#%%%
         # Doplnění chybějících hodnot
         df = fill_miss_values(df)
 
@@ -351,13 +304,14 @@ if __name__ == "__main__":
             data=df,
             x='Gender',
             discrete=True,
-            hue=df['Gender'],
             shrink=.8).set_xticks([0, 1])
         plt.title('Rozdělení pacientů podle pohlaví')
         plt.xlabel('Pohlaví (0=Muž, 1=Žena)')
         plt.ylabel('Počet')
         plt.show()
 
+#%%%
+df.head
 
 
 
