@@ -1,7 +1,7 @@
 #%%%
 
 #FIXME: FILL MISSING REMOVES SELECTOR COLUMN
-#TODO: TRAIN_TEST_SPLIT
+#TODO: Remove prints and add log messages
 #TODO: OSEKAŤ NEFYZIOLOGICKÉ HODNOTY
 #TODO: ZJEDNOTIŤ DOKUMENTÁCIU
 # TODO: MODEL A VÝBER HYPERPARAMETROV
@@ -83,7 +83,10 @@ Features explanation: <br>
 """
 
 #%%%
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(levelname)s - %(message)s"
+    )
 logger = logging.getLogger(__name__)
 
 
@@ -146,7 +149,7 @@ def preprocess_data(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def del_missing(df):
+def del_missing(df:pd.DataFrame) -> pd.DataFrame:
     """
     Odstraní řádky, kde v "Selector" chybí hodnota (NaN)
     :param df: DataFrame
@@ -167,7 +170,7 @@ def del_missing(df):
     print(f'Aktuální počet řádků v datasetu: {new_count}')
     return df
 
-def graph_shape(df):
+def graph_shape(df:pd.DataFrame) -> None:
     """
     Stĺpec po stĺpci vytvorý grafy pre každý parameter aby sme mohly určiť rozloženie.
     Grafi sa zobrazujú jeden podruho vždy až po zatvorení predšlého grafu
@@ -185,7 +188,7 @@ def graph_shape(df):
         plt.show()
     return None
 
-def get_corelation_matrix(df):
+def get_corelation_matrix(df:pd.DataFrame) -> None:
     """
     vytvorí maticu korelácí jednotlivých parametrou pre určenie miery korelácie a potencionalne odhalenie redundancie .
     :param df: DataFrame
@@ -201,7 +204,7 @@ def get_corelation_matrix(df):
     return None
 
 
-def fill_miss_values(df):
+def fill_miss_values(df: pd.DataFrame) -> pd.DataFrame:
     """
     Doplňuje chybějící hodnoty (NaN) pomocí KNNImputer pro numerická data a
     nejčastější hodnotu (modus) pro kategorická.
@@ -235,27 +238,34 @@ def fill_miss_values(df):
     ])
 
     # Kombinace transformací
-    preproc = ColumnTransformer(transformers=[
+    preproc = ColumnTransformer(
+        transformers=[
         ('num', numerical_transformer, numerical_features),
         ('cat', categorical_transformer, categorical_features)
-        ], remainder='passthrough')
+        ], remainder='passthrough'
+        )
 
     # Pozor, preprocessor vrací NumPy
     df_imputed_array = preproc.fit_transform(df_features)
-    df_imputed = pd.DataFrame(df_imputed_array,
-                              columns=df_features.columns,
-                              index=df_features.index)
+    df_imputed = pd.DataFrame(
+        df_imputed_array,
+        columns=df_features.columns,
+        index=df_features.index
+        )
 
     # Připojení 'Selector'
     if selector_col is not None:
-        df_imputed['Selector'] = selector_col
+        df_imputed['Selector'] = df_target
 
     logger.info('Doplňování chybějících hodnot dokončeno.')
 
     return df_imputed
 
 
-def split_data(data: pd.DataFrame) -> pd.DataFrame:
+def split_data(
+    data: pd.DataFrame,
+    seed:int=42
+    ) -> pd.DataFrame:
     """
     Splits data into training and validation data
     
@@ -266,8 +276,23 @@ def split_data(data: pd.DataFrame) -> pd.DataFrame:
     :return val_y: validation error
     """
     
-    # pridať train_test_split
-    pass
+    # Getting all columns names
+    features = data.columns
+    # Removing our Y from the list -> Selector
+    features = features.remove('Selector')
+    
+    # Assigning X, Y
+    Y = data.Selector
+    X = data[features]
+    (
+        train_x, val_x, train_y, val_y
+        ) = train_test_split(
+            X, Y,
+            test_size=0.8,
+            random_state=seed
+            )
+        
+    return train_x, val_x, train_y, val_y
 
 #%%%
 # --- Hlavní skript ---
@@ -311,7 +336,7 @@ if __name__ == "__main__":
         plt.show()
 
 #%%%
-df.head
+display(df)
 
 
 
