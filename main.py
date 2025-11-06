@@ -17,7 +17,7 @@ Viktor Morovič
 VUT: 257026@vutbr.cz
  
 Filip Sedlár
-VUT: 
+VUT: 262751@vutbr.cz
  
 Matúš Smolka
 VUT: 257044@vutbr.cz
@@ -104,7 +104,7 @@ def load_file(filename: str) -> pd.DataFrame:
         
         # Creates deep copy of df
         df = rdf.copy(deep=True)
-        print(f'File {filename} loaded succesfully. \n')
+        logger.info(f'File {filename} loaded succesfully. \n')
         
         # print(f'Dataset obsahuje {df.shape[0]} řádků a {df.shape[1]} sloupců.')
         # TEST PRINT
@@ -112,7 +112,7 @@ def load_file(filename: str) -> pd.DataFrame:
         return rdf, df
    
     except FileNotFoundError:
-        print(f'File {path} was not found in directory.')
+        logger.warning(f'File {path} was not found in directory.')
         return None
 
 #%%%
@@ -148,23 +148,23 @@ def preprocess_data(df: pd.DataFrame) -> pd.DataFrame:
 
 def del_missing(df):
     """
-    Odstraní řádky, kde v "Selector" chybí hodnota (NaN)
+    Deletes the row, if there is a 'Selector' value missing (NaN)
     :param df: DataFrame
     :return:
-        df - DataFrame s odstranením chybících "Selector"
+        df - DataFrame with deleted NaN 'Selector' values
     """
 
-    print('Probíhá kontrola v cílové proměnné...')
+    logger.info('Checking the values in the "Selector"...')
     raw_count = len(df)
     df.dropna(subset='Selector', inplace=True)
     new_count = len(df)
     deleted = raw_count - new_count
     if deleted > 0:
-        print(f'Odstraněno {deleted} řádků kde byla chyba v cílové proměnné.')
+        logger.info(f'Deleted {deleted} rows, where there was an error in "Selector" value.')
     else:
-        print('V cílové proměnné "Selector" nechyběly žádné hodnoty.')
+        logger.info('There were no missing values in "Selector".')
 
-    print(f'Aktuální počet řádků v datasetu: {new_count}')
+    logger.info(f'Current number of rows in the dataset: {new_count}')
     return df
 
 def graph_shape(df):
@@ -203,56 +203,97 @@ def get_corelation_matrix(df):
 
 def fill_miss_values(df):
     """
-    Doplňuje chybějící hodnoty (NaN) pomocí KNNImputer pro numerická data a
-    nejčastější hodnotu (modus) pro kategorická.
+    Fillip up the missing values (NaN) with the help of KNNImputer for numerical values
+    and with modus for categorical.
     :param df: DataFrame
     :return:
-        df_imputed - DataFrame s doplněnými hodnotami
+        final_df - DataFrame with filled values, Selector without change
     """
 
-    logger.info('Provádím doplnění NaN hodnot...')
-    # Oddělení hodnoty kterou nechci upravovat
+    logger.info('Working on filling the NaN values...')
+    df = df.copy()
+
+    # Separating the feature I do not want to change
     selector_col = None
     if 'Selector' in df.columns:
-        df_target = df['Selector']
-        df_features = df.drop('Selector', axis=1)
+        selector_col = df['Selector'].copy()
+        df_features = df.drop(columns=['Selector'])
     else:
         df_features = df
 
-    # Rozdělení sloupců na numerická a kategorické
+    # Differentiate between numerical and categorical
+     # Just failsafe, we did change gender into binary form.
     categorical_features = df_features.select_dtypes(include=['object', 'category']).columns.tolist()
     numerical_features = df_features.select_dtypes(include=['number']).columns.tolist()
 
-    logger.info(f'Nalezeno {len(numerical_features)} numerických příznaků.\n')
-    logger.info(f'Nalezeno {len(categorical_features)} kategorických příznaků.\n')
+    logger.info(f'Found {len(numerical_features)} numerical values.\n')
+    logger.info(f'Found {len(categorical_features)} categorical values.\n')
 
     # Pipelines
-    numerical_transformer = Pipeline(steps=[
-        ('impute', KNNImputer(n_neighbors=5))
-    ]) # 5 Sousedů
-    categorical_transformer = Pipeline(steps=[
-        ('impute', SimpleImputer(strategy='most_frequent'))
-    ])
+    transformers = []
+    if numerical_features:
+        numerical_transformer = Pipeline(steps=[
+            ('impute', KNNImputer(n_neighbors=5))
+        ])  # 5 Neighbours
+        transformers.append(('num', numerical_transformer, numerical_features))
+    if categorical_features:
+        categorical_transformer = Pipeline(steps=[
+            ('impute', SimpleImputer(strategy='most_frequent'))
+        ])
+        transformers.append(('cat', categorical_transformer, categorical_features))
 
-    # Kombinace transformací
-    preproc = ColumnTransformer(transformers=[
-        ('num', numerical_transformer, numerical_features),
-        ('cat', categorical_transformer, categorical_features)
-        ], remainder='passthrough')
+    if not transformers:
+        # No need for transformation
+        if selector_col is not None:
+            final_df = pd.concat([df_features, selector_col], axis=1)
+        else:
+            final_df = df_features
+            logger.info('No columns for imputation, returning original DataFrame.\n')
+        return final_df
 
-    # Pozor, preprocessor vrací NumPy
-    df_imputed_array = preproc.fit_transform(df_features)
-    df_imputed = pd.DataFrame(df_imputed_array,
-                              columns=df_features.columns,
-                              index=df_features.index)
+    # Combination of transformations
+    preproc = ColumnTransformer(
+        transformers=transformers,
+        remainder='passthrough')
 
-    # Připojení 'Selector'
+    # Fit-transform
+    imputed_array = preproc.fit_transform(df_features)
+
+    # Order of returned columns
+        # ! ColumnTransformer returns values based on order of transformers
+    transformed_cols = []
+    for name, transformer, cols in preproc.transformers_:
+        if name != 'remained':
+            transformed_cols.extend(cols)
+    # Remained columns if they exist
+    if preproc.remainder == 'passthrough':
+        passthrough_cols = [c for c in df_features.columns if c not in transformed_cols]
+        transformed_cols.extend(passthrough_cols)
+
+    # Create a DataFrame and add index
+    df_imputed = pd.DataFrame(imputed_array, columns=transformed_cols, index=df_features.index)
+
+    # Return original data types
+    for col in categorical_features:
+        if col in df_imputed.columns:
+            orig_dtype = df_features[col].dtype
+            if pd.api.types.is_categorical_dtype(orig_dtype):
+                df_imputed[col] = df_imputed[col].astype('category')
+            else:
+                df_imputed[col] = df_imputed[col].astype(df_features[col].dtype)
+
+    # Checking the original column order
+    df_imputed = df_imputed[df_features.columns]
+
+    # Adding back the 'Selector'
     if selector_col is not None:
-        df_imputed['Selector'] = selector_col
+        final_df = pd.concat([df_imputed, selector_col], axis=1)
+    else:
+        final_df = df_imputed
 
-    logger.info('Doplňování chybějících hodnot dokončeno.')
+    logger.info('Correcting of the missing values was finished.')
 
-    return df_imputed
+    return final_df
 
 
 def split_data(data: pd.DataFrame) -> pd.DataFrame:
@@ -273,32 +314,32 @@ def split_data(data: pd.DataFrame) -> pd.DataFrame:
 # --- Hlavní skript ---
 if __name__ == "__main__":
 
-    print('\nProbíhá načítání souboru...')
+    logger.info('\nLoading of the file in progress...')
     # Načtení souboru
     path = 'liver-disease_data.csv'
     rdf, df = load_file(path)
-    display(df)
+    #display(df)
 
 #%%%
     if df is not None:
 
         df = preprocess_data(df=df)
-        display(df)
+        #display(df)
 
 #%%%
         # Odstranění řádků s chybějící cílovou hodnotou
         df = del_missing(df)
-        display(df)
+        #display(df)
 #%%%
         # Doplnění chybějících hodnot
         df = fill_miss_values(df)
 
-        print('\nPreprocessing dokončen.')
-        print('Počet chybějících hodnot (NaN) v každém sloupci po základním zpracování:')
+        print('\nPreprocessing finished.')
+        print('Number of missing values (NaN) after basic preprocessing:')
         print(df.isnull().sum()) # Správně nuly...
 
         # Vizualizace rozdělení pohlaví
-        print('Vytváření vizualizace pro rozdělení pohlaví...')
+        print('Creating the visualisation for gender distribution...')
         plt.figure(figsize=(8, 6))
         sns.histplot(
             data=df,
@@ -311,7 +352,7 @@ if __name__ == "__main__":
         plt.show()
 
 #%%%
-df.head
+print(df.head)
 
 
 
