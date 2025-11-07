@@ -1,9 +1,7 @@
 #%%%
 
-#TODO: Remove prints and add log messages
 #TODO: OSEKAŤ NEFYZIOLOGICKÉ HODNOTY
-#TODO: ZJEDNOTIŤ DOKUMENTÁCIU
-# TODO: MODEL A VÝBER HYPERPARAMETROV
+#TODO: MODEL A VÝBER HYPERPARAMETROV
 
 """
 LIVER DISEASE PREDICTION
@@ -90,9 +88,8 @@ def load_file(filename: str) -> pd.DataFrame:
     """
     Loads CSV data under filename into 2 pandas DataFrames
     :param (str) filename: name of the file
-    :return:
-        rdf - raw DataFrame
-        df - deep copy DataFrame
+    :return rdf: raw DataFrame
+    :return df: deep copy DataFrame
     """
 
     try:
@@ -121,6 +118,7 @@ def preprocess_data(df: pd.DataFrame) -> pd.DataFrame:
     Takes in raw data frame and replaces non-sense values with
     NaNs
     :param (pd.DataFrame) df: unprocessed DataFrame
+    :return df: clean preprocessed data with nonsense values replaced by NaNs
     """
     
     ### REFORMATTING SELECTOR OUTPUT INTO BINARY VALUES
@@ -146,10 +144,9 @@ def preprocess_data(df: pd.DataFrame) -> pd.DataFrame:
 
 def del_missing(df:pd.DataFrame) -> pd.DataFrame:
     """
-    Removes entries with missing Selector value - NaN
+    Removes entries with missing Selector value  NaN
     :param (pd.DataFrame) df: DataFrame
-    :return:
-        df - DataFrame with removed missing Selector entries 
+    :return df: DataFrame with removed missing Selector entries 
     """
 
     logger.info('Removing entries with missing Selector...')
@@ -169,15 +166,14 @@ def graph_data(df: pd.DataFrame) -> None:
     """
     Function for unifying graphing functions under one function
     :param (pd.DataFrame) df: DataFrame
-    :return: None     
+    :return None:     
     """
     def graph_shape(df:pd.DataFrame) -> None:
         """
         Plots every feature from a DataFrame df. 
         New figure is created after closing the previous one. 
         :param df: DataFrame
-        :return:
-            None
+        :return None:
         """
         
         # Selects every numeric column
@@ -186,7 +182,11 @@ def graph_data(df: pd.DataFrame) -> None:
         # Iterates over columns and for each one generates a histogram
         for col in numeric_cols:
             plt.figure()
-            df[col].hist(bins=30)
+            sns.histplot(
+                data=df, x=col,
+                bins=30, hue='Selector',
+                palette='rocket'
+                )
             plt.title(col)
             plt.xlabel(col)
             plt.ylabel("Frequency")
@@ -198,8 +198,7 @@ def graph_data(df: pd.DataFrame) -> None:
         """
         Generates correlation matrix and plots it in a heatmap.
         :param (pd.DataFrame) df: DataFrame
-        :return:
-            None
+        :return None:
         """
         corr = df.corr(numeric_only=True)
 
@@ -306,9 +305,10 @@ def split_data(
     Splits data into training and validation data
     
     :param (pd.DataFrame) data: original data
+    :param (int) seed: seed for random train/test split state
     :return train_x: training data
-    :return train_y: training for error
     :return val_x: validation data
+    :return train_y: training for error
     :return val_y: validation error
     """
     
@@ -321,10 +321,10 @@ def split_data(
     Y = data.Selector
     X = data[features]
     (
-        train_x, val_x, train_y, val_y
+    train_x, val_x, train_y, val_y
         ) = train_test_split(
             X, Y,
-            test_size=0.8,
+            test_size=0.25,
             random_state=seed
             )
         
@@ -359,9 +359,13 @@ if __name__ == "__main__":
 
     #%%%
         graph_data(df=df)
-#%%%
-display(df)
 
-
+        display(df)
+        #%%%
+        train_x, val_x, train_y, val_y = split_data(data=df)
+        train_x.head
+        val_x.head
+        train_y.head
+        val_y.head
 
 
