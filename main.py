@@ -1,11 +1,9 @@
 #%%%
 
-#FIXME: FILL MISSING REMOVES SELECTOR COLUMN
 #TODO: Remove prints and add log messages
 #TODO: OSEKAŤ NEFYZIOLOGICKÉ HODNOTY
 #TODO: ZJEDNOTIŤ DOKUMENTÁCIU
 # TODO: MODEL A VÝBER HYPERPARAMETROV
-
 
 """
 LIVER DISEASE PREDICTION
@@ -27,19 +25,17 @@ VUT: 257044@vutbr.cz
 # built-in libs
 import os
 import time
-
+import logging
 
 # NN
 import tqdm
 import shap
-
 
 # Basic data analytics libraries
 import numpy as np
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
-import logging
 import matplotlib.pyplot as plt
 
 # Principal component analysis
@@ -107,7 +103,7 @@ def load_file(filename: str) -> pd.DataFrame:
         
         # Creates deep copy of df
         df = rdf.copy(deep=True)
-        print(f'File {filename} loaded succesfully. \n')
+        logger.info(f'File {filename} loaded succesfully. \n')
         
         # print(f'Dataset obsahuje {df.shape[0]} řádků a {df.shape[1]} sloupců.')
         # TEST PRINT
@@ -115,7 +111,7 @@ def load_file(filename: str) -> pd.DataFrame:
         return rdf, df
    
     except FileNotFoundError:
-        print(f'File {path} was not found in directory.')
+        logger.info(f'File {path} was not found in directory.')
         return None
 
 #%%%
@@ -136,7 +132,6 @@ def preprocess_data(df: pd.DataFrame) -> pd.DataFrame:
     # 1: pathological 2->0:healthy
     df['Selector'] = df['Selector'].map({1:1,2:0})
     
-    
     ### REPLACING NON-SENSE AGE
     df.loc[df['Age'] > 110, 'Age'] = np.nan
     
@@ -151,74 +146,115 @@ def preprocess_data(df: pd.DataFrame) -> pd.DataFrame:
 
 def del_missing(df:pd.DataFrame) -> pd.DataFrame:
     """
-    Odstraní řádky, kde v "Selector" chybí hodnota (NaN)
-    :param df: DataFrame
+    Removes entries with missing Selector value - NaN
+    :param (pd.DataFrame) df: DataFrame
     :return:
-        df - DataFrame s odstranením chybících "Selector"
+        df - DataFrame with removed missing Selector entries 
     """
 
-    print('Probíhá kontrola v cílové proměnné...')
+    logger.info('Removing entries with missing Selector...')
     raw_count = len(df)
     df.dropna(subset='Selector', inplace=True)
     new_count = len(df)
     deleted = raw_count - new_count
     if deleted > 0:
-        print(f'Odstraněno {deleted} řádků kde byla chyba v cílové proměnné.')
+        logger.info(f'Removed {deleted} entries with missing Selector')
     else:
-        print('V cílové proměnné "Selector" nechyběly žádné hodnoty.')
+        logger.info('No missing entries without Selector in the DataFrame')
 
-    print(f'Aktuální počet řádků v datasetu: {new_count}')
+    logger.info(f'Current number of entries in dataset: {new_count}')
     return df
 
-def graph_shape(df:pd.DataFrame) -> None:
+def graph_data(df: pd.DataFrame) -> None:
     """
-    Stĺpec po stĺpci vytvorý grafy pre každý parameter aby sme mohly určiť rozloženie.
-    Grafi sa zobrazujú jeden podruho vždy až po zatvorení predšlého grafu
-    :param df: DataFrame
-    :return:
-        None
+    Function for unifying graphing functions under one function
+    :param (pd.DataFrame) df: DataFrame
+    :return: None     
     """
-    numeric_cols = df.select_dtypes(include=['float64', 'int64']).columns
-    for col in numeric_cols:
-        plt.figure()
-        df[col].hist(bins=30)
-        plt.title(col)
-        plt.xlabel(col)
-        plt.ylabel("Frequency")
+    def graph_shape(df:pd.DataFrame) -> None:
+        """
+        Plots every feature from a DataFrame df. 
+        New figure is created after closing the previous one. 
+        :param df: DataFrame
+        :return:
+            None
+        """
+        
+        # Selects every numeric column
+        numeric_cols = df.select_dtypes(include=['float64', 'int64']).columns
+        
+        # Iterates over columns and for each one generates a histogram
+        for col in numeric_cols:
+            plt.figure()
+            df[col].hist(bins=30)
+            plt.title(col)
+            plt.xlabel(col)
+            plt.ylabel("Frequency")
+            plt.show()
+            
+        return None
+
+    def get_corelation_matrix(df:pd.DataFrame) -> None:
+        """
+        Generates correlation matrix and plots it in a heatmap.
+        :param (pd.DataFrame) df: DataFrame
+        :return:
+            None
+        """
+        corr = df.corr(numeric_only=True)
+
+        # Plotting of the correlation matrix
+        plt.figure(figsize=(10, 8))
+        sns.heatmap(corr, annot=True, fmt=".2f")
+        plt.title("Correlation Matrix of Biomarkers")
         plt.show()
+        return None
+
+    def plot_gender(df:pd.DataFrame) -> None:
+        """
+        Plots gender with hue showing Selector
+        :param (pd.DataFrame) df: DataFrame
+        :return: None
+        """
+        # Vizualizace rozdělení pohlaví
+        plt.figure(figsize=(8, 6))
+        sns.histplot(
+            data=df,
+            x='Gender',
+            discrete=True,
+            hue='Selector',
+            palette='rocket',
+            shrink=.8).set_xticks([0, 1])
+        plt.title('Rozdělení pacientů podle pohlaví')
+        plt.xlabel('Pohlaví (0=Muž, 1=Žena)')
+        plt.ylabel('Počet')
+        plt.show()
+        return None
+        
+    # Function calling
+    logger.info('Visualising data...')
+    get_corelation_matrix(df=df)
+    graph_shape(df=df)
+    plot_gender(df=df)
+    
     return None
-
-def get_corelation_matrix(df:pd.DataFrame) -> None:
-    """
-    vytvorí maticu korelácí jednotlivých parametrou pre určenie miery korelácie a potencionalne odhalenie redundancie .
-    :param df: DataFrame
-    :return:
-        None
-    """
-    corr = df.corr(numeric_only=True)
-
-    plt.figure(figsize=(10, 8))
-    sns.heatmap(corr, annot=True, fmt=".2f")
-    plt.title("Correlation Matrix of Biomarkers")
-    plt.show()
-    return None
-
 
 def fill_miss_values(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Doplňuje chybějící hodnoty (NaN) pomocí KNNImputer pro numerická data a
-    nejčastější hodnotu (modus) pro kategorická.
-    :param df: DataFrame
+    Fills in missing values (NaNs) using KNNImputer for continuous data
+    and most common value (modus) for discrete categoricacl data. 
+    :param (pd.DataFrame) df: DataFrame of preprocessed data
     :return:
         df_imputed - DataFrame s doplněnými hodnotami
     """
 
-    logger.info('Provádím doplnění NaN hodnot...')
+    logger.info('Filling in missing values...')
     # Oddělení hodnoty kterou nechci upravovat
-    selector_col = None
+    selector_col = False
     if 'Selector' in df.columns:
-        df_target = df['Selector']
+        df_target = df['Selector'].copy(deep=True)
         df_features = df.drop('Selector', axis=1)
+        selector_col = True
     else:
         df_features = df
 
@@ -226,8 +262,8 @@ def fill_miss_values(df: pd.DataFrame) -> pd.DataFrame:
     categorical_features = df_features.select_dtypes(include=['object', 'category']).columns.tolist()
     numerical_features = df_features.select_dtypes(include=['number']).columns.tolist()
 
-    logger.info(f'Nalezeno {len(numerical_features)} numerických příznaků.\n')
-    logger.info(f'Nalezeno {len(categorical_features)} kategorických příznaků.\n')
+    logger.info(f'Found {len(numerical_features)} numerical features.\n')
+    logger.info(f'Found {len(categorical_features)} categorical features.\n')
 
     # Pipelines
     numerical_transformer = Pipeline(steps=[
@@ -254,7 +290,7 @@ def fill_miss_values(df: pd.DataFrame) -> pd.DataFrame:
         )
 
     # Připojení 'Selector'
-    if selector_col is not None:
+    if selector_col:
         df_imputed['Selector'] = df_target
 
     logger.info('Doplňování chybějících hodnot dokončeno.')
@@ -264,7 +300,7 @@ def fill_miss_values(df: pd.DataFrame) -> pd.DataFrame:
 
 def split_data(
     data: pd.DataFrame,
-    seed:int=42
+    seed:int = 42
     ) -> pd.DataFrame:
     """
     Splits data into training and validation data
@@ -298,19 +334,17 @@ def split_data(
 # --- Hlavní skript ---
 if __name__ == "__main__":
 
-    print('\nProbíhá načítání souboru...')
+    logger.info('Loading data file...')
     # Načtení souboru
     path = 'liver-disease_data.csv'
     rdf, df = load_file(path)
-    display(df)
+    # display(df)
 
-#%%%
     if df is not None:
 
         df = preprocess_data(df=df)
-        display(df)
+        # display(df)
 
-#%%%
         # Odstranění řádků s chybějící cílovou hodnotou
         df = del_missing(df)
         display(df)
@@ -318,23 +352,13 @@ if __name__ == "__main__":
         # Doplnění chybějících hodnot
         df = fill_miss_values(df)
 
-        print('\nPreprocessing dokončen.')
-        print('Počet chybějících hodnot (NaN) v každém sloupci po základním zpracování:')
-        print(df.isnull().sum()) # Správně nuly...
+        logger.info('Data preprocessing completed')
+        # print('Počet chybějících hodnot (NaN) v každém sloupci po základním zpracování:')
+        # print(df.isnull().sum()) # Správně nuly...
 
-        # Vizualizace rozdělení pohlaví
-        print('Vytváření vizualizace pro rozdělení pohlaví...')
-        plt.figure(figsize=(8, 6))
-        sns.histplot(
-            data=df,
-            x='Gender',
-            discrete=True,
-            shrink=.8).set_xticks([0, 1])
-        plt.title('Rozdělení pacientů podle pohlaví')
-        plt.xlabel('Pohlaví (0=Muž, 1=Žena)')
-        plt.ylabel('Počet')
-        plt.show()
 
+    #%%%
+        graph_data(df=df)
 #%%%
 display(df)
 
