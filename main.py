@@ -2,6 +2,7 @@
 
 #TODO: OSEKAŤ NEFYZIOLOGICKÉ HODNOTY
 #TODO: MODEL A VÝBER HYPERPARAMETROV
+#TODO: Funkcia na výber optimal param
 
 """
 LIVER DISEASE PREDICTION
@@ -24,6 +25,7 @@ VUT: 257044@vutbr.cz
 import os
 import time
 import logging
+from typing import Tuple
 
 # NN
 import tqdm
@@ -37,7 +39,11 @@ import matplotlib.pyplot as plt
 import matplotlib.pyplot as plt
 
 # Principal component analysis
-from sklearn.model_selection import train_test_split, StratifiedKFold, GridSearchCV
+from sklearn.model_selection import (
+    train_test_split,
+    StratifiedKFold,
+    GridSearchCV
+    )
 from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import KNNImputer, SimpleImputer
@@ -48,14 +54,15 @@ from sklearn.metrics import (
     ConfusionMatrixDisplay,
     roc_auc_score,
     RocCurveDisplay,
-    f1_score
+    f1_score,
+    accuracy_score
 )
 
 from sklearn.decomposition import PCA
 from torch.utils.hipify.hipify_python import preprocessor
 
 # Classificator XGBoost
-# from xgboost import XGBClassifier
+from xgboost import XGBClassifier
 
 # pozrieť jednotlivé scipy moduly pre rýchlejšie načítanie
 
@@ -76,7 +83,7 @@ Features explanation: <br>
 ***classification*** - patient is sick / healthy
 """
 
-#%%%
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(levelname)s - %(message)s"
@@ -111,7 +118,7 @@ def load_file(filename: str) -> pd.DataFrame:
         logger.info(f'File {path} was not found in directory.')
         return None
 
-#%%%
+
 def preprocess_data(df: pd.DataFrame) -> pd.DataFrame:
     """
     Preprocesses data into a clean working DataFrame.
@@ -128,7 +135,7 @@ def preprocess_data(df: pd.DataFrame) -> pd.DataFrame:
     
     # mapping binary values onto selector column
     # 1: pathological 2->0:healthy
-    df['Selector'] = df['Selector'].map({1:1,2:0})
+    df['Selector'] = df['Selector'].map({1:0,2:1})
     
     ### REPLACING NON-SENSE AGE
     df.loc[df['Age'] > 110, 'Age'] = np.nan
@@ -151,16 +158,22 @@ def del_missing(df:pd.DataFrame) -> pd.DataFrame:
 
     logger.info('Removing entries with missing Selector...')
     raw_count = len(df)
+    
+    # Dropping entries with missing selector
     df.dropna(subset='Selector', inplace=True)
     new_count = len(df)
+    # Number of dropped entries
     deleted = raw_count - new_count
+    
     if deleted > 0:
         logger.info(f'Removed {deleted} entries with missing Selector')
     else:
         logger.info('No missing entries without Selector in the DataFrame')
 
     logger.info(f'Current number of entries in dataset: {new_count}')
+    
     return df
+
 
 def graph_data(df: pd.DataFrame) -> None:
     """
@@ -168,6 +181,7 @@ def graph_data(df: pd.DataFrame) -> None:
     :param (pd.DataFrame) df: DataFrame
     :return None:     
     """
+    
     def graph_shape(df:pd.DataFrame) -> None:
         """
         Plots every feature from a DataFrame df. 
@@ -238,13 +252,13 @@ def graph_data(df: pd.DataFrame) -> None:
     
     return None
 
+
 def fill_miss_values(df: pd.DataFrame) -> pd.DataFrame:
     """
     Fills in missing values (NaNs) using KNNImputer for continuous data
     and most common value (modus) for discrete categoricacl data. 
     :param (pd.DataFrame) df: DataFrame of preprocessed data
-    :return:
-        df_imputed - DataFrame s doplněnými hodnotami
+    :return df_imputed: DataFrame with filled-in NaNs
     """
 
     logger.info('Filling in missing values...')
@@ -257,12 +271,21 @@ def fill_miss_values(df: pd.DataFrame) -> pd.DataFrame:
     else:
         df_features = df
 
+    #FIXME: wrong categorical data selection
     # Rozdělení sloupců na numerická a kategorické
-    categorical_features = df_features.select_dtypes(include=['object', 'category']).columns.tolist()
-    numerical_features = df_features.select_dtypes(include=['number']).columns.tolist()
+    categorical_features = df_features.select_dtypes(
+        include=['object', 'category']
+        ).columns.tolist()
+    numerical_features = df_features.select_dtypes(
+        include=['number']
+        ).columns.tolist()
 
-    logger.info(f'Found {len(numerical_features)} numerical features.\n')
-    logger.info(f'Found {len(categorical_features)} categorical features.\n')
+    logger.info(
+        f'Found {len(numerical_features)} numerical features.\n'
+        )
+    logger.info(
+        f'Found {len(categorical_features)} categorical features.\n'
+        )
 
     # Pipelines
     numerical_transformer = Pipeline(steps=[
@@ -292,7 +315,7 @@ def fill_miss_values(df: pd.DataFrame) -> pd.DataFrame:
     if selector_col:
         df_imputed['Selector'] = df_target
 
-    logger.info('Doplňování chybějících hodnot dokončeno.')
+    logger.info('Finished filling in missing values')
 
     return df_imputed
 
@@ -312,6 +335,8 @@ def split_data(
     :return val_y: validation error
     """
     
+    logger.info('Splitting data into training and testing sets...')
+    
     # Getting all columns names
     features = data.columns
     # Removing our Y from the list -> Selector
@@ -321,14 +346,42 @@ def split_data(
     Y = data.Selector
     X = data[features]
     (
-    train_x, val_x, train_y, val_y
+    train_x, val_x, y_train, y_val
         ) = train_test_split(
             X, Y,
             test_size=0.25,
             random_state=seed
             )
         
-    return train_x, val_x, train_y, val_y
+    return train_x, val_x, y_train, y_val
+
+def xgb_classify(
+    train_x:pd.DataFrame, val_x:pd.DataFrame,
+    y_train:pd.Series, y_val:pd.Series
+    )->float:
+    """
+    Creates and trains XGB classifier
+    :param (pd.DataFrame) train_x: training set
+    :param (pd.DataFrame) val_x: validation set
+    :param (pd.Series) train_y: training target
+    :param (pd.Series) val_y: validation target
+    :return Tuple:
+    """
+    
+    logger.info('Training XGBClassifier...')
+    
+    # Creating model
+    model = XGBClassifier(eta=0.005)
+    model.fit(train_x, y_train)
+    
+    # Getting target predictions
+    y_pred = model.predict(val_x)
+    
+    # Evaluating performance
+    acc = accuracy_score(y_true=y_val, y_pred=y_pred)
+    
+    logger.info(f'Training complete. \nModel predicted target with overall accuracy: {acc}')
+    return acc
 
 #%%%
 # --- Hlavní skript ---
@@ -338,7 +391,6 @@ if __name__ == "__main__":
     # Načtení souboru
     path = 'liver-disease_data.csv'
     rdf, df = load_file(path)
-    # display(df)
 
     if df is not None:
 
@@ -347,8 +399,7 @@ if __name__ == "__main__":
 
         # Odstranění řádků s chybějící cílovou hodnotou
         df = del_missing(df)
-        display(df)
-#%%%
+
         # Doplnění chybějících hodnot
         df = fill_miss_values(df)
 
@@ -356,16 +407,10 @@ if __name__ == "__main__":
         # print('Počet chybějících hodnot (NaN) v každém sloupci po základním zpracování:')
         # print(df.isnull().sum()) # Správně nuly...
 
-
-    #%%%
         graph_data(df=df)
 
-        display(df)
-        #%%%
-        train_x, val_x, train_y, val_y = split_data(data=df)
-        train_x.head
-        val_x.head
-        train_y.head
-        val_y.head
+        train_x, val_x, y_train, y_val = split_data(data=df)
+        acc = xgb_classify(train_x,val_x,y_train,y_val)
+
 
 
