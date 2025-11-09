@@ -36,7 +36,7 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
-#from qdm.pandas.tests.resample.test_resample_api import df_mult
+# from qdm.pandas.tests.resample.test_resample_api import df_mult
 
 # Principal component analysis
 from sklearn.model_selection import (
@@ -67,6 +67,7 @@ from torch.utils.hipify.hipify_python import preprocessor
 from xgboost import XGBClassifier
 from imblearn.over_sampling import SMOTE
 from imblearn.pipeline import Pipeline as ImbPipeline
+
 # pozrieť jednotlivé scipy moduly pre rýchlejšie načítanie
 
 """
@@ -198,7 +199,7 @@ def graph_data(df: pd.DataFrame) -> None:
         n_cols = len(numeric_cols)
         n_rows = (n_cols + 2) // 3
 
-        fig, axes = plt.subplots(n_rows, 3, figsize=(15, n_rows*5))
+        fig, axes = plt.subplots(n_rows, 3, figsize=(15, n_rows * 5))
         axes = axes.flatten()
         # Iterates over columns and for each one generates a histogram
         for i, col in enumerate(numeric_cols):
@@ -210,7 +211,7 @@ def graph_data(df: pd.DataFrame) -> None:
             axes[i].set_title(col)
             axes[i].set_xlabel(col)
             axes[i].set_ylabel('Frequency')
-        for j in range(i+1, len(axes)):
+        for j in range(i + 1, len(axes)):
             axes[j].set_visible(False)
 
         plt.tight_layout(h_pad=8.0)
@@ -240,7 +241,7 @@ def graph_data(df: pd.DataFrame) -> None:
         plt.figure(figsize=(12, 10))
         sns.heatmap(corr, annot=True, fmt=".2f", cmap='viridis')
         plt.title("Correlation Matrix of Biomarkers")
-        #plt.show()
+        # plt.show()
         return None
 
     def plot_gender(df: pd.DataFrame) -> None:
@@ -260,13 +261,12 @@ def graph_data(df: pd.DataFrame) -> None:
             palette='rocket',
             shrink=.8,
             multiple='stack'
-        ).set_xticks([0,1])
-
+        ).set_xticks([0, 1])
 
         plt.title('Rozdělení pacientů podle pohlaví')
         plt.xlabel('Pohlaví (0=Muž, 1=Žena)')
         plt.ylabel('Počet')
-        #plt.show()
+        # plt.show()
         return None
 
     # Function calling
@@ -297,14 +297,12 @@ def fill_miss_values(df: pd.DataFrame) -> pd.DataFrame:
     else:
         df_features = df.copy()
 
-
     # Rozdělení sloupců na numerická a kategorické
     categorical_features = [
         col for col in df_features.columns
         if (df_features[col].dtype.name in ['object', 'category']) or (df_features[col].nunique(dropna=True) <= 5)
     ]
     numerical_features = [col for col in df_features.columns if col not in categorical_features]
-
 
     logger.info(
         f'Found {len(numerical_features)} numerical features.\n'
@@ -413,7 +411,8 @@ def xgb_classify(
     logger.info(f'Training complete. \nModel predicted target with overall accuracy: {acc}')
     return acc
 
-def evaluate_model(X: pd.DataFrame, Y: pd.Series, n_splits: int=10, seed: int =42):
+
+def evaluate_model(X: pd.DataFrame, Y: pd.Series, n_splits: int = 10, seed: int = 42):
     """
     Does a robust evaluation of model with the help of stratificated cross validation.
     Implements a complete pipeline for training and evaluation:
@@ -454,15 +453,15 @@ def evaluate_model(X: pd.DataFrame, Y: pd.Series, n_splits: int=10, seed: int =4
 
     # =========== GRID a PIPELINE pro scale_pos_weight ===========
     param_grid = {
-        'n_estimators': [100, 250, 400],        # Počet stromů
-        'max_depth': [3, 5, 7, 9],              # Hloubka stromů
-        'learning_rate': [0.01, 0.05, 0.1],     # Kroky učení
-        'subsample': [0.7, 0.9, 1.0],           # Procento řádků (pacientů)
-        'colsample_bytree': [0.7, 0.9, 1.0]     # Procento rysů (sloupců)
+        'n_estimators': [100, 250, 400],  # Počet stromů
+        'max_depth': [3, 5, 7, 9],  # Hloubka stromů
+        'learning_rate': [0.01, 0.05, 0.1],  # Kroky učení
+        'subsample': [0.7, 0.9, 1.0],  # Procento řádků (pacientů)
+        'colsample_bytree': [0.7, 0.9, 1.0]  # Procento rysů (sloupců)
     }
     # Výpočet váhy
     try:
-        scale_pos_weight = (Y ==0).sum() / (Y==1).sum()
+        scale_pos_weight = (Y == 0).sum() / (Y == 1).sum()
         logger.info(f'Calculated scale_pos_weight for imbalance: {scale_pos_weight:.4f}')
     except ZeroDivisionError:
         logger.warning('Positive class (1) has zero samples. Setting scale_pos_weight to 1.')
@@ -484,7 +483,7 @@ def evaluate_model(X: pd.DataFrame, Y: pd.Series, n_splits: int=10, seed: int =4
         'model__learning_rate': [0.01, 0.1],
         'model__subsample': [0.8, 1.0]
     }
-    
+
     param_grid = {
         'model__n_estimators': [100, 250, 400],     # Počet stromů
         'model__max_depth':    [3, 5, 7, 9],      # Max hloubka stromu
@@ -492,7 +491,7 @@ def evaluate_model(X: pd.DataFrame, Y: pd.Series, n_splits: int=10, seed: int =4
         'model__subsample':    [0.7, 0.9, 1.0]      # % dat pro trénování každého stromu
         'model__colsample_bytree': [0.7, 0.9, 1.0]
     }
-    
+
     # Pipeline pro aplikaci SMOTE
         # SMOTE jen na trénovací data !
     pipeline = ImbPipeline(steps=[
@@ -506,42 +505,42 @@ def evaluate_model(X: pd.DataFrame, Y: pd.Series, n_splits: int=10, seed: int =4
     """
 
     # Hlavní smyčka pro křížovou validaci
-    for fold, (train_index, val_index) in enumerate(skf.split(X,Y)):
+    for fold, (train_index, val_index) in enumerate(skf.split(X, Y)):
         logger.info(f'--- Fold {fold + 1}/{n_splits} ---')
         # Rozdělení dat na trénovací a validační pro tento fold
         train_x, val_x = X.iloc[train_index], X.iloc[val_index]
         y_train, y_val = Y.iloc[train_index], Y.iloc[val_index]
 
         # GridSearchCV
-            # Hledání nejlepších parametrů, ale pouze na trénovacích datech
-            # 'cv=3' -> 3-Fold CV uvnitř jednoho foldu
-            # Optimalizace na "roc_auc"
+        # Hledání nejlepších parametrů, ale pouze na trénovacích datech
+        # 'cv=3' -> 3-Fold CV uvnitř jednoho foldu
+        # Optimalizace na "roc_auc"
         grid_search = GridSearchCV(
-            estimator=model_proto,     # pipeline=SMOTE, modelproto=scale_pos_weight
+            estimator=model_proto,  # pipeline=SMOTE, modelproto=scale_pos_weight
             param_grid=param_grid,
-            scoring='roc_auc',      # Ješte může být f1_weighted nebo mcc
-            cv=3,                   # 3-fold CV v tomto foldu
+            scoring='roc_auc',  # Ješte může být f1_weighted nebo mcc
+            cv=3,  # 3-fold CV v tomto foldu
             n_jobs=-1,
-            verbose=0       # Pro více logů nastavit na 1
+            verbose=0  # Pro více logů nastavit na 1
         )
 
-        logger.info(f'Fold {fold+1}: Starting GridSearchCV with SMOTE...')
+        logger.info(f'Fold {fold + 1}: Starting GridSearchCV with SMOTE...')
         grid_search.fit(train_x, y_train)
         # Nejlepší model z tohoto foldu
-        #best_pipeline = grid_search.best_estimator_        # pipeline -> SMOTE
-        best_model = grid_search.best_estimator_            # model -> weight
+        # best_pipeline = grid_search.best_estimator_        # pipeline -> SMOTE
+        best_model = grid_search.best_estimator_  # model -> weight
 
-        logger.info(f'Fold {fold+1}: Best params found: {grid_search.best_params_}')
-        logger.info(f'Fold {fold+1}: Best internal CV score (ROC AUC): {grid_search.best_score_:.4f}')
+        logger.info(f'Fold {fold + 1}: Best params found: {grid_search.best_params_}')
+        logger.info(f'Fold {fold + 1}: Best internal CV score (ROC AUC): {grid_search.best_score_:.4f}')
 
         # Hledání optimálního prahu (Thresholding) (na validačních)
 
-        #y_pred_proba = best_pipeline.predict_proba(val_x)[:,1]     # -> SMOTE
+        # y_pred_proba = best_pipeline.predict_proba(val_x)[:,1]     # -> SMOTE
         # Pravděpodobnost pro třídu 1 (nemocný)
-        y_pred_proba = best_model.predict_proba(val_x)[:, 1]     # -> weight
+        y_pred_proba = best_model.predict_proba(val_x)[:, 1]  # -> weight
         # 50 prahů
-        thresholds= np.linspace(0.1, 0.9, 50) # 50 prahů
-        best_mcc = -1.0 # -1 -> 1 range
+        thresholds = np.linspace(0.1, 0.9, 50)  # 50 prahů
+        best_mcc = -1.0  # -1 -> 1 range
         best_thresh = 0.5
 
         for thresh in thresholds:
@@ -553,13 +552,13 @@ def evaluate_model(X: pd.DataFrame, Y: pd.Series, n_splits: int=10, seed: int =4
             if current_mc > best_mcc:
                 best_mcc = current_mc
                 best_thresh = thresh
-        logger.info(f'Fold {fold +1}: Best threshold found {best_thresh:.4f} (gives MCC: {best_mcc:.4f}')
+        logger.info(f'Fold {fold + 1}: Best threshold found {best_thresh:.4f} (gives MCC: {best_mcc:.4f}')
 
         # Finální predikce s nejlepším prahem
         y_pred_best = (y_pred_proba > best_thresh).astype(int)
 
         # Predikce na validačních datech
-        #y_pred = best_pipeline.predict(val_x)
+        # y_pred = best_pipeline.predict(val_x)
 
         # Evaluace (na VALIDAČNÍCH), s optimálním prahem
         acc = accuracy_score(y_true=y_val, y_pred=y_pred_best)
@@ -570,8 +569,8 @@ def evaluate_model(X: pd.DataFrame, Y: pd.Series, n_splits: int=10, seed: int =4
         fold_thresholds.append(best_thresh)
 
         # Diagnostika přeučení (na trénikových datech)
-        #y_train_proba = best_pipeline.predict_proba(train_x)[:,1]      # -> SMOTE
-        y_train_proba = best_model.predict_proba(train_x)[:, 1]         # -> weight
+        # y_train_proba = best_pipeline.predict_proba(train_x)[:,1]      # -> SMOTE
+        y_train_proba = best_model.predict_proba(train_x)[:, 1]  # -> weight
         y_train_pred = (y_train_proba > best_thresh).astype(int)
         train_mcc = matthews_corrcoef(y_train, y_train_pred)
         train_auc = roc_auc_score(y_train, y_train_proba)
@@ -579,17 +578,17 @@ def evaluate_model(X: pd.DataFrame, Y: pd.Series, n_splits: int=10, seed: int =4
         fold_train_mccs.append(train_mcc)
         fold_train_aucs.append(train_auc)
 
-        logger.info(f'Fold {fold+1} Train MCC: {train_mcc:.4f} | Val MCC: {mcc:.4f}')
-        logger.info(f'Fold {fold+1} Train AUC: {train_auc:.4f} | Val AUC: {grid_search.best_score_:.4f}')
+        logger.info(f'Fold {fold + 1} Train MCC: {train_mcc:.4f} | Val MCC: {mcc:.4f}')
+        logger.info(f'Fold {fold + 1} Train AUC: {train_auc:.4f} | Val AUC: {grid_search.best_score_:.4f}')
 
         # Uložení důležitých rysů
         try:
-            #model_in_pipeline = best_pipeline.named_steps['model']     # -> SMOTE
-            #fold_importances = pd.Series(model_in_pipeline.feature_importances_, index=X.columns)   # -> SMOTE
+            # model_in_pipeline = best_pipeline.named_steps['model']     # -> SMOTE
+            # fold_importances = pd.Series(model_in_pipeline.feature_importances_, index=X.columns)   # -> SMOTE
             fold_importances = pd.Series(best_model.feature_importances_, index=X.columns)
-            feature_importances[f'fold_{fold+1}'] = fold_importances
+            feature_importances[f'fold_{fold + 1}'] = fold_importances
         except Exception as e:
-            logger.warning(f'Could not get feature importances in fold {fold+1}. Error: {e}')
+            logger.warning(f'Could not get feature importances in fold {fold + 1}. Error: {e}')
 
     # Finální výsledky
     logger.info(f'Validation done.')
@@ -603,6 +602,7 @@ def evaluate_model(X: pd.DataFrame, Y: pd.Series, n_splits: int=10, seed: int =4
     logger.info(f'Average Train AUC: {np.mean(fold_train_aucs):.4f} +/- {np.std(fold_train_aucs):.4f}')
     # Plot výsledek
     plot_feature_importance(feature_importances)
+
 
 def plot_feature_importance(importances_df: pd.DataFrame):
     """
@@ -632,11 +632,12 @@ def plot_feature_importance(importances_df: pd.DataFrame):
     # Vykreslení horizont bar plotu
     plt.barh(y_pos, means, xerr=errs, align='center', color='tab:blue', ecolor='gray')
     plt.yticks(y_pos, plot_df.index)
-    plt.gca().invert_yaxis() # Nejlepší feature nahoře
+    plt.gca().invert_yaxis()  # Nejlepší feature nahoře
     plt.xlabel('Importance')
     plt.ylabel('Features')
     plt.tight_layout()
     plt.show()
+
 
 def create_features(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -675,8 +676,8 @@ def create_features(df: pd.DataFrame) -> pd.DataFrame:
 
     # Odstranění původního kdyby byl neposlehlivý
 
-
     return df_out
+
 
 def scale_data(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -694,7 +695,7 @@ def scale_data(df: pd.DataFrame) -> pd.DataFrame:
     df_scaled = df.copy()
 
     # Oddělení cílové proměnné
-    target=None
+    target = None
     if 'Selector' in df_scaled.columns:
         target = df_scaled.pop('Selector')
     else:
@@ -703,7 +704,7 @@ def scale_data(df: pd.DataFrame) -> pd.DataFrame:
     # Oddělení Gender
     gender = None
     if 'Gender' in df_scaled.columns:
-        gender = df_scaled.pop('Gender') # Neškáluji Gender
+        gender = df_scaled.pop('Gender')  # Neškáluji Gender
 
     features_to_scale = df_scaled.columns
 
@@ -721,6 +722,7 @@ def scale_data(df: pd.DataFrame) -> pd.DataFrame:
 
     logger.info('Scaling was successful.')
     return df_scaled
+
 
 def clip_physiological_values(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -756,7 +758,8 @@ def clip_physiological_values(df: pd.DataFrame) -> pd.DataFrame:
             values_to_be_clipped_count = (df_clipped[col] > upper_limit).sum()
 
             if values_to_be_clipped_count > 0:
-                logger.info(f'Clipping {values_to_be_clipped_count} values in "{col}" (setting max to {upper_limit:.2f}')
+                logger.info(
+                    f'Clipping {values_to_be_clipped_count} values in "{col}" (setting max to {upper_limit:.2f}')
                 # Clipping
                 df_clipped[col] = df_clipped[col].clip(upper=upper_limit)
             else:
@@ -765,6 +768,7 @@ def clip_physiological_values(df: pd.DataFrame) -> pd.DataFrame:
             logger.warning(f'Column "{col}" not found for clipping.')
     logger.info('Clipping complete.')
     return df_clipped
+
 
 def apply_log_transform(df: pd.DataFrame) -> pd.DataFrame:
     """
@@ -796,6 +800,8 @@ def apply_log_transform(df: pd.DataFrame) -> pd.DataFrame:
             logger.warning(f'Column "{col}" not found for log transform.')
     logger.info('Log transform complete.')
     return df_transformed
+
+
 # %%%
 #
 #
@@ -811,7 +817,7 @@ if __name__ == "__main__":
     if df is not None:
         # Základní předzpracování
         df = preprocess_data(df=df)
-            # display(df)
+        # display(df)
         # Odstranění řádků s chybějící cílovou hodnotou
         df = del_missing(df=df)
         #   Ořezání extrémních hodnot -> menší MCC než logaritmická
@@ -826,15 +832,14 @@ if __name__ == "__main__":
         # Škálování
         df = scale_data(df=df)
 
-
         logger.info('Data preprocessing completed')
         # print('Počet chybějících hodnot (NaN) v každém sloupci po základním zpracování:')
         # print(df.isnull().sum()) # Správně nuly...
 
-        #graph_data(df=df)
+        # graph_data(df=df)
 
-        #train_x, val_x, y_train, y_val = split_data(data=df)
-        #acc = xgb_classify(train_x, val_x, y_train, y_val)
+        # train_x, val_x, y_train, y_val = split_data(data=df)
+        # acc = xgb_classify(train_x, val_x, y_train, y_val)
         if 'Selector' not in df.columns:
             logger.error('"Selector" is not in the DataFrame, cannot continue.')
         else:
