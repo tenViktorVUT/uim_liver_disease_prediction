@@ -8,3 +8,4 @@ tqdm
 jupyter
 scikit-learn
 xgboost
+imblearn

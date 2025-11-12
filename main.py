@@ -1,10 +1,15 @@
 # %%%
 
+#FIXME: Pridať average val na skúšanie modelu
 #TODO: SMOTE VS ADASIN
+#TODO: nelinearne transformacie
 #TODO: confusion matrix plotting
 #TODO: expand plotting
 # TODO: MODEL A VÝBER HYPERPARAMETROV
 # TODO: Funkcia na výber optimal param
+# TODO: Model exportovať ako model a separe testing script
+# - augmentace sa nepoužíva pri testovacích dátach
+# - fill missing values sa používa
 
 """
 LIVER DISEASE PREDICTION
@@ -20,6 +25,10 @@ VUT:
 
 Matúš Smolka
 VUT: 257044@vutbr.cz
+
+
+In order to succesfully run this script it requires
+Data folder to be in the same directory as the script.
 """
 
 # importing dependencies
@@ -341,7 +350,7 @@ def fill_miss_values(df: pd.DataFrame) -> pd.DataFrame:
     df_imputed = df_imputed[df_features.columns]
 
     # Připojení 'Selector'
-    if df_target is not None:
+    if selector_col:
         df_imputed = pd.concat([df_imputed, df_target], axis=1)
 
     logger.info('Finished filling in missing values')
