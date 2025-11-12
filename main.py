@@ -1,6 +1,8 @@
 # %%%
 
-# TODO: OSEKAŤ NEFYZIOLOGICKÉ HODNOTY
+#TODO: SMOTE VS ADASIN
+#TODO: confusion matrix plotting
+#TODO: expand plotting
 # TODO: MODEL A VÝBER HYPERPARAMETROV
 # TODO: Funkcia na výber optimal param
 
@@ -770,6 +772,7 @@ def clip_physiological_values(df: pd.DataFrame) -> pd.DataFrame:
     return df_clipped
 
 
+#FIXME: Logtransform vie pokaziť dáta
 def apply_log_transform(df: pd.DataFrame) -> pd.DataFrame:
     """
     Uses logarithmical transform (log1p) on strongly skewed features.
@@ -802,6 +805,7 @@ def apply_log_transform(df: pd.DataFrame) -> pd.DataFrame:
     return df_transformed
 
 
+
 # %%%
 #
 #
@@ -814,6 +818,7 @@ if __name__ == "__main__":
     path = 'liver-disease_data.csv'
     rdf, df = load_file(path)
 
+    #%%%
     if df is not None:
         # Základní předzpracování
         df = preprocess_data(df=df)
@@ -822,22 +827,28 @@ if __name__ == "__main__":
         df = del_missing(df=df)
         #   Ořezání extrémních hodnot -> menší MCC než logaritmická
         #   df = clip_physiological_values(df=df)
-        #
+        display(df)
+        
+        #%%%
         # Doplnění chybějících hodnot
         df = fill_miss_values(df=df)
         # Vytvoření nových features
         df = create_features(df=df)
+        display(df)
         # Aplikace logaritmické transformace
-        df = apply_log_transform(df=df)
+        # df = apply_log_transform(df=df)
+        # display(df)
         # Škálování
-        df = scale_data(df=df)
-
+        # df = scale_data(df=df)
+        # display(df)
         logger.info('Data preprocessing completed')
         # print('Počet chybějících hodnot (NaN) v každém sloupci po základním zpracování:')
         # print(df.isnull().sum()) # Správně nuly...
 
-        # graph_data(df=df)
+        #%%%
+        graph_data(df=df)
 
+        #%%%
         # train_x, val_x, y_train, y_val = split_data(data=df)
         # acc = xgb_classify(train_x, val_x, y_train, y_val)
         if 'Selector' not in df.columns:
@@ -847,4 +858,7 @@ if __name__ == "__main__":
             X = df.drop('Selector', axis=1).copy()
 
             evaluate_model(X, Y)
-
+            
+        #TODO: confusion matrix
+        confusion_matrix()
+#TODO: feature importance pre and post log transform
