@@ -37,6 +37,7 @@ import os
 import time
 import logging
 from typing import Tuple
+import glob
 
 # NN
 import tqdm
@@ -47,6 +48,7 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
+import matplotlib.image as mpimg
 # from qdm.pandas.tests.resample.test_resample_api import df_mult
 
 # Principal component analysis
@@ -574,6 +576,14 @@ def evaluate_model(X: pd.DataFrame, Y: pd.Series, n_splits: int = 10, seed: int 
         # Evaluace (na VALIDAČNÍCH), s optimálním prahem
         acc = accuracy_score(y_true=y_val, y_pred=y_pred_best)
         mcc = best_mcc
+        #confusion matrix
+        filename = f"confusion_fold_{fold}.png"
+        save_confusion_matrix(
+            y_true=y_val,
+            y_pred=y_pred_best,
+            filename=filename,
+            title=f"Fold {fold}"
+        )
 
         fold_accuracies.append(acc)
         fold_mccs.append(mcc)
@@ -591,6 +601,7 @@ def evaluate_model(X: pd.DataFrame, Y: pd.Series, n_splits: int = 10, seed: int 
 
         logger.info(f'Fold {fold + 1} Train MCC: {train_mcc:.4f} | Val MCC: {mcc:.4f}')
         logger.info(f'Fold {fold + 1} Train AUC: {train_auc:.4f} | Val AUC: {grid_search.best_score_:.4f}')
+
 
         # Uložení důležitých rysů
         try:
@@ -612,7 +623,14 @@ def evaluate_model(X: pd.DataFrame, Y: pd.Series, n_splits: int = 10, seed: int 
     logger.info(f'Average Train MCC: {np.mean(fold_train_mccs):.4f} +/- {np.std(fold_train_mccs):.4f}')
     logger.info(f'Average Train AUC: {np.mean(fold_train_aucs):.4f} +/- {np.std(fold_train_aucs):.4f}')
     # Plot výsledek
+    filename = f"confusion_fold_{fold}.png"
+
+
     plot_feature_importance(feature_importances)
+
+    show_all_matrices(n_splits)
+    cleanup_confusion_matrices()
+
 
 
 def plot_feature_importance(importances_df: pd.DataFrame):
@@ -814,6 +832,138 @@ def apply_log_transform(df: pd.DataFrame) -> pd.DataFrame:
     return df_transformed
 
 
+def plot_confusion_matrix(y_true, y_pred, labels=None, title="Confusion Matrix"):
+    """
+    Plots a confusion matrix using pandas or numpy inputs.
+
+    Parameters:
+        y_true: array-like (pandas Series or numpy array)
+        y_pred: array-like (pandas Series or numpy array)
+        labels: list of labels (optional)
+        title: graph title
+    """
+
+    cm = confusion_matrix(y_true, y_pred, labels=labels)
+    if labels is None:
+        labels = sorted(list(set(y_true) | set(y_pred)))
+
+    fig, ax = plt.subplots(figsize=(6, 5))
+    im = ax.imshow(cm, interpolation='nearest')
+
+    ax.set_title(title)
+    plt.colorbar(im)
+
+    # axis labels
+    ax.set_xticks(np.arange(len(labels)))
+    ax.set_yticks(np.arange(len(labels)))
+    ax.set_xticklabels(labels)
+    ax.set_yticklabels(labels)
+    ax.set_xlabel("Predicted")
+    ax.set_ylabel("Actual")
+
+    # write numbers inside boxes
+    for i in range(len(labels)):
+        for j in range(len(labels)):
+            ax.text(j, i, cm[i, j],
+                    ha="center", va="center",
+                    color="white" if cm[i, j] > cm.max() / 2 else "black")
+
+    plt.tight_layout()
+    plt.show()
+
+def save_confusion_matrix(y_true, y_pred,  filename,labels=None, title=None):
+    """
+    saves a confusion matrix as png.
+    same as plot confusion matrix but instead of plotting the matrix it saves it instead
+    Parameters:
+        y_true: array-like (pandas Series or numpy array)
+        y_pred: array-like (pandas Series or numpy array)
+        labels: list of labels (optional)
+        title: graph title
+    """
+    cm = confusion_matrix(y_true, y_pred, labels=labels)
+
+    if title is None:
+        title = filename
+    if labels is None:
+        labels = sorted(list(set(y_true) | set(y_pred)))
+
+    fig, ax = plt.subplots(figsize=(4, 3))
+    im = ax.imshow(cm, interpolation='nearest')
+
+    ax.set_title(title)
+    plt.colorbar(im)
+
+    ax.set_xticks(np.arange(len(labels)))
+    ax.set_yticks(np.arange(len(labels)))
+    ax.set_xticklabels(labels)
+    ax.set_yticklabels(labels)
+    ax.set_xlabel("Predicted")
+    ax.set_ylabel("Actual")
+
+    for i in range(len(labels)):
+        for j in range(len(labels)):
+            ax.text(j, i, cm[i, j],
+                    ha="center", va="center",
+                    color="white" if cm[i, j] > cm.max()/2 else "black")
+
+    plt.tight_layout()
+    plt.savefig(filename)
+    plt.close()
+
+def show_all_matrices(n_splits=10):
+    """
+    displayes saved confusion matrices in 2 row format
+    Parameters:
+    pram: n_splits - the number of saved matrices
+    """
+    cols = (n_splits // 2)
+    rows = 2
+
+    fig, axes = plt.subplots(rows, cols, figsize=(4 * cols, 8))
+    axes = axes.flatten()  # flatten to 1D list for easy indexing
+
+    # If only 1 subplot, wrap in list so indexing works
+    if n_splits == 1:
+        axes = [axes]
+
+    for i in range(1, n_splits + 1):
+        filename = f"confusion_fold_{i-1}.png"
+
+        if not os.path.exists(filename):
+            axes[i-1].set_title(f"Fold {i}\n(No Image)")
+            axes[i-1].axis('off')
+            continue
+
+        img = mpimg.imread(filename)
+        axes[i-1].imshow(img)
+        axes[i-1].axis('off')
+        axes[i-1].set_title(f"Fold {i}")
+
+    plt.tight_layout()
+    plt.show()
+
+
+def cleanup_confusion_matrices():
+    """
+    goes thrue all the files in project folder and deletes saved confusion matrices
+    """
+    files = glob.glob("confusion_fold_*.png")
+
+    if not files:
+        print("No confusion matrix images found to delete.")
+        return
+
+    for f in files:
+        try:
+            os.remove(f)
+            print(f"Deleted: {f}")
+        except Exception as e:
+            print(f"Could not delete {f}: {e}")
+
+    print("Cleanup complete.")
+
+
 
 # %%%
 #
@@ -831,25 +981,25 @@ if __name__ == "__main__":
     if df is not None:
         # Základní předzpracování
         df = preprocess_data(df=df)
-        # display(df)
+        display(df)
         # Odstranění řádků s chybějící cílovou hodnotou
         df = del_missing(df=df)
         #   Ořezání extrémních hodnot -> menší MCC než logaritmická
         #   df = clip_physiological_values(df=df)
-        display(df)
+        #display(df)
         
         #%%%
         # Doplnění chybějících hodnot
         df = fill_miss_values(df=df)
         # Vytvoření nových features
         df = create_features(df=df)
-        display(df)
+        #display(df)
         # Aplikace logaritmické transformace
         # df = apply_log_transform(df=df)
-        # display(df)
+        display(df)
         # Škálování
         # df = scale_data(df=df)
-        # display(df)
+        display(df)
         logger.info('Data preprocessing completed')
         # print('Počet chybějících hodnot (NaN) v každém sloupci po základním zpracování:')
         # print(df.isnull().sum()) # Správně nuly...
