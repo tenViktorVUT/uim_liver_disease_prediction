@@ -1,15 +1,17 @@
 # %%%
 
-#FIXME: Pridať average val na skúšanie modelu
+#FIXME: Evaluate model
+#FIXME: selector imbalance
+
+
+### FIXME: FIXME: FIXME:
+#FIXME: Columns po transformáciách musia matchnúť pôvodný dataset
+# - model pracuje s columns tak, ako sú problém pri ich skrytom datasete
+
 #TODO: SMOTE VS ADASIN
-#TODO: nelinearne transformacie
-#TODO: confusion matrix plotting
-#TODO: expand plotting
-# TODO: MODEL A VÝBER HYPERPARAMETROV
-# TODO: Funkcia na výber optimal param
 # TODO: Model exportovať ako model a separe testing script
 # - augmentace sa nepoužíva pri testovacích dátach
-# - fill missing values sa používa
+
 
 """
 LIVER DISEASE PREDICTION
@@ -36,7 +38,7 @@ Data folder to be in the same directory as the script.
 import os
 import time
 import logging
-from typing import Tuple
+from typing import Tuple, List
 import glob
 
 # NN
@@ -55,7 +57,8 @@ import matplotlib.image as mpimg
 from sklearn.model_selection import (
     train_test_split,
     StratifiedKFold,
-    GridSearchCV
+    GridSearchCV,
+    cross_val_score
 )
 from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
@@ -80,6 +83,10 @@ from torch.utils.hipify.hipify_python import preprocessor
 from xgboost import XGBClassifier
 from imblearn.over_sampling import SMOTE
 from imblearn.pipeline import Pipeline as ImbPipeline
+from plotly.io import show
+import optuna
+from optuna.visualization import plot_optimization_history
+
 
 # pozrieť jednotlivé scipy moduly pre rýchlejšie načítanie
 
@@ -263,7 +270,7 @@ def graph_data(df: pd.DataFrame) -> None:
         :param (pd.DataFrame) df: DataFrame
         :return: None
         """
-        # Vizualizace rozdělení pohlaví
+        # Visualising gender distribution
         logger.info('Creating the graf of gender division...')
         plt.figure(figsize=(8, 6))
         sns.histplot(
@@ -279,7 +286,10 @@ def graph_data(df: pd.DataFrame) -> None:
         plt.title('Rozdělení pacientů podle pohlaví')
         plt.xlabel('Pohlaví (0=Muž, 1=Žena)')
         plt.ylabel('Počet')
+        
+        # debugging pring
         # plt.show()
+        
         return None
 
     # Function calling
@@ -301,6 +311,7 @@ def fill_miss_values(df: pd.DataFrame) -> pd.DataFrame:
     """
 
     logger.info('Filling in missing values...')
+    
     # Oddělení hodnoty kterou nechci upravovat
     selector_col = False
     if 'Selector' in df.columns:
@@ -313,9 +324,15 @@ def fill_miss_values(df: pd.DataFrame) -> pd.DataFrame:
     # Rozdělení sloupců na numerická a kategorické
     categorical_features = [
         col for col in df_features.columns
-        if (df_features[col].dtype.name in ['object', 'category']) or (df_features[col].nunique(dropna=True) <= 5)
+        if (
+            df_features[col].dtype.name in ['object', 'category']
+            ) or (
+                df_features[col].nunique(dropna=True) <= 5
+                )
     ]
-    numerical_features = [col for col in df_features.columns if col not in categorical_features]
+    numerical_features = [
+        col for col in df_features.columns if col not in categorical_features
+        ]
 
     logger.info(
         f'Found {len(numerical_features)} numerical features.\n'
@@ -324,15 +341,16 @@ def fill_miss_values(df: pd.DataFrame) -> pd.DataFrame:
         f'Found {len(categorical_features)} categorical features.\n'
     )
 
-    # Transformery
+    # Transformers
+    # 5 neighbors
     numerical_transformer = Pipeline(steps=[
         ('impute', KNNImputer(n_neighbors=5))
-    ])  # 5 Sousedů
+    ])
     categorical_transformer = Pipeline(steps=[
         ('impute', SimpleImputer(strategy='most_frequent'))
     ])
 
-    # Kombinace transformací
+    # Combining Transformers
     preproc = ColumnTransformer(
         transformers=[
             ('num', numerical_transformer, numerical_features),
@@ -362,13 +380,15 @@ def fill_miss_values(df: pd.DataFrame) -> pd.DataFrame:
 
 def split_data(
         data: pd.DataFrame,
-        seed: int = 42
+        seed: int = 42,
+        *args
 ) -> pd.DataFrame:
     """
     Splits data into training and validation data
 
     :param (pd.DataFrame) data: original data
     :param (int) seed: seed for random train/test split state
+    :param *args: any arguments that will be passed into tts
     :return train_x: training data
     :return val_x: validation data
     :return train_y: training for error
@@ -388,8 +408,7 @@ def split_data(
     (
         train_x, val_x, y_train, y_val
     ) = train_test_split(
-        X, Y,
-        test_size=0.25,
+        X, Y, args,
         random_state=seed
     )
 
@@ -425,7 +444,11 @@ def xgb_classify(
     return acc
 
 
-def evaluate_model(X: pd.DataFrame, Y: pd.Series, n_splits: int = 10, seed: int = 42):
+def evaluate_model(
+    X: pd.DataFrame,
+    Y: pd.Series,
+    n_splits: int = 10,
+    seed: int = 42):
     """
     Does a robust evaluation of model with the help of stratificated cross validation.
     Implements a complete pipeline for training and evaluation:
@@ -452,15 +475,24 @@ def evaluate_model(X: pd.DataFrame, Y: pd.Series, n_splits: int = 10, seed: int 
     :return:
         None
     """
-    logger.info(f'Starting the validation of the model ({n_splits}-Fold Stratified K-Fold)...')
-    skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
+    logger.info(
+        f'Starting the validation of the model ({n_splits}-Fold Stratified K-Fold)...'
+        )
+    skf = StratifiedKFold(
+        n_splits=n_splits,
+        shuffle=True,
+        random_state=seed
+        )
+    
     # Seznamy pro ukládání výsledků z foldů
     fold_accuracies = []
     fold_mccs = []
     fold_thresholds = []
+    
     # Seznamy pro diagnostiku přeučení
     fold_train_mccs = []
     fold_train_aucs = []
+    
     # DataFrame pro ukládání důležitosti rysů z foldů
     feature_importances = pd.DataFrame(index=X.columns)
 
@@ -612,16 +644,32 @@ def evaluate_model(X: pd.DataFrame, Y: pd.Series, n_splits: int = 10, seed: int 
         except Exception as e:
             logger.warning(f'Could not get feature importances in fold {fold + 1}. Error: {e}')
 
-    # Finální výsledky
-    logger.info(f'Validation done.')
-    logger.info('### Average validation scores ###')
-    logger.info(f'Average accuracy: {np.mean(fold_accuracies):.4f} +/- {np.std(fold_accuracies):.4f}')
-    logger.info(f'Average MCC: {np.mean(fold_mccs):.4f} +/- {np.std(fold_mccs):.4f}')
-    logger.info(f'Average optimal threshold: {np.mean(fold_thresholds):.4f} +/- {np.std(fold_thresholds):.4f}')
+    # Final results
+    logger.info(
+        f'Validation done.'
+        )
+    logger.info(
+        '### Average validation scores ###'
+        )
+    logger.info(
+        f'Average accuracy: {np.mean(fold_accuracies):.4f} +/- {np.std(fold_accuracies):.4f}'
+        )
+    logger.info(
+        f'Average MCC: {np.mean(fold_mccs):.4f} +/- {np.std(fold_mccs):.4f}'
+        )
+    logger.info(
+        f'Average optimal threshold: {np.mean(fold_thresholds):.4f} +/- {np.std(fold_thresholds):.4f}'
+        )
 
-    logger.info(' ### Average Training Scores (Overfitting Check) ###')
-    logger.info(f'Average Train MCC: {np.mean(fold_train_mccs):.4f} +/- {np.std(fold_train_mccs):.4f}')
-    logger.info(f'Average Train AUC: {np.mean(fold_train_aucs):.4f} +/- {np.std(fold_train_aucs):.4f}')
+    logger.info(
+        ' ### Average Training Scores (Overfitting Check) ###'
+        )
+    logger.info(
+        f'Average Train MCC: {np.mean(fold_train_mccs):.4f} +/- {np.std(fold_train_mccs):.4f}'
+        )
+    logger.info(f'Average Train AUC: {
+        np.mean(fold_train_aucs):.4f} +/- {np.std(fold_train_aucs):.4f}'
+        )
     # Plot výsledek
     filename = f"confusion_fold_{fold}.png"
 
@@ -632,8 +680,102 @@ def evaluate_model(X: pd.DataFrame, Y: pd.Series, n_splits: int = 10, seed: int 
     cleanup_confusion_matrices()
 
 
+# Hyperparameter optimization using bayesian optimization
+def bayes_optimize(
+    X: pd.DataFrame,
+    y:pd.Series,
+    draw:bool = False
+    ) -> Tuple[np.ndarray, float]:
+    """
+    Encapsulation function for the objective function.
+    Feeds data into optuna objective.
+    
+    Creates an optuna study and using bayesian optimization.
+    finds the best hyperparameters in order 
+    to maximize roc and auc. 
+    
+    
+    Returns best parameters and best value based on 
+    cross validation score.
+    
+    :param (pd.DataFrame) X:
+        train features and their values 
+    :param (pd.Series) y:
+        train target (without splitting)
+    :param (bool) draw: hides/plots optuna optimization
+    :return Tuple[np.ndarray, float]:
+        best_param: best parameters for xgboost \n
+        best_value: best roc and auc
+    """
+    
+    
+    def objective(
+        trial:int
+        ) -> np.ndarray:
+        """
+        Objective for obtuna bayesian optimisation.
+    
+        :param (int) trial: number of trials
+        :return np.ndarray: nDarray of cross_validation score
+        """
+        params = {
+            "max_depth": trial.suggest_int("max_depth", 3, 15),
+            "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3,log=True),
+            "min_child_weight": trial.suggest_int("min_child_weight", 0, 50),
+            "gamma": trial.suggest_float("gamma", 1e-8, 1.0,log=True),
+            "subsample": trial.suggest_float("subsample", 0.5, 1.0),
+            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0),
+            "reg_alpha": trial.suggest_float("reg_alpha", 1e-8, 10.0,log=True),
+            "reg_lambda": trial.suggest_float("reg_lambda", 1e-8, 10.0,log=True),
+            "n_estimators": trial.suggest_int("n_estimators", 100, 500),
+            "eval_metric": "logloss"
+        }
 
-def plot_feature_importance(importances_df: pd.DataFrame):
+        model = XGBClassifier(
+            **params
+            )
+        cv = StratifiedKFold(
+            n_splits = 5
+            )
+        
+        score = cross_val_score(
+            model,
+            X=X,
+            y=y,
+            scoring='roc_auc',
+            cv=cv,
+            n_jobs=-1
+            ).mean()
+        
+        return score
+    
+    # creating optuna study
+    study = optuna.create_study(
+        direction='maximize'
+        )
+    study.optimize(
+        objective,
+        n_trials=300,
+        timeout=300
+        )
+    
+    # plotting study details if draw is enabled
+    if draw:
+        fig = plot_optimization_history(
+            study
+        )
+        show(fig)
+        
+    # returns tuple
+    return (
+        study.best_params,
+        study.best_value
+        )
+
+
+def plot_feature_importance(
+    importances_df: pd.DataFrame
+    ) -> None:
     """
     Plots the average importance of features across all the folds.
     :param importances_df: pd.DataFrame
@@ -666,9 +808,13 @@ def plot_feature_importance(importances_df: pd.DataFrame):
     plt.ylabel('Features')
     plt.tight_layout()
     plt.show()
+    
+    return None
 
 
-def create_features(df: pd.DataFrame) -> pd.DataFrame:
+def create_features(
+    df: pd.DataFrame
+    ) -> pd.DataFrame:
     """
     Creates new, clinically relevant features from the existing data.
     Has to be called after 'fill_miss_values', to avoid /NaN.
@@ -708,11 +854,14 @@ def create_features(df: pd.DataFrame) -> pd.DataFrame:
     return df_out
 
 
-def scale_data(df: pd.DataFrame) -> pd.DataFrame:
+def scale_data(
+    df: pd.DataFrame
+    ) -> pd.DataFrame:
     """
     Application of RobustScales on all numerical features apart from "Gender" and
     "Selector". "Selector" has to be in the DataFrame.
     RobustScales helps with the outliers.
+    
     :param df: pd.DataFrame
                 DataFrame that is supposed to scale. Needs a "Selector".
                 Should be called after log transformation.
@@ -753,11 +902,13 @@ def scale_data(df: pd.DataFrame) -> pd.DataFrame:
     return df_scaled
 
 
-def clip_physiological_values(df: pd.DataFrame) -> pd.DataFrame:
+def clip_physiological_values(
+    df: pd.DataFrame
+    ) -> pd.DataFrame:
     """
     Clipping extreme values (outliers) based on quantiles.
     Helps the model not to learn from extreme values.
-    Clipping at 99.5 percentile.
+    Clipping at 95th percentile.
 
     This func was REPLACED by 'apply_log_transform', which appeared more robust.
     :param df: DataFrame
@@ -783,7 +934,7 @@ def clip_physiological_values(df: pd.DataFrame) -> pd.DataFrame:
         if col in df_clipped.columns:
             # Výpočet percentilu
             # Ošetření NaN
-            upper_limit = df_clipped[col].dropna().quantile(0.995)
+            upper_limit = df_clipped[col].dropna().quantile(0.95)
             values_to_be_clipped_count = (df_clipped[col] > upper_limit).sum()
 
             if values_to_be_clipped_count > 0:
@@ -799,8 +950,9 @@ def clip_physiological_values(df: pd.DataFrame) -> pd.DataFrame:
     return df_clipped
 
 
-#FIXME: Logtransform vie pokaziť dáta
-def apply_log_transform(df: pd.DataFrame) -> pd.DataFrame:
+def apply_log_transform(
+    df: pd.DataFrame
+    ) -> pd.DataFrame:
     """
     Uses logarithmical transform (log1p) on strongly skewed features.
     Call AFTER fill_miss_values and BEFORE scaling.
@@ -822,17 +974,25 @@ def apply_log_transform(df: pd.DataFrame) -> pd.DataFrame:
         'Sgot'
     ]
 
+    # Iterates over features 
     for col in features_to_transform:
         if col in df_transformed.columns:
+            # Applies log transform in case of cold being transformable
             df_transformed[col] = np.log1p(df_transformed[col])
             logger.info(f'Log transform applied to "{col}".')
         else:
+            # Throws warning else
             logger.warning(f'Column "{col}" not found for log transform.')
     logger.info('Log transform complete.')
     return df_transformed
 
 
-def plot_confusion_matrix(y_true, y_pred, labels=None, title="Confusion Matrix"):
+def plot_confusion_matrix(
+    y_true,
+    y_pred,
+    labels=None,
+    title="Confusion Matrix"
+    ):
     """
     Plots a confusion matrix using pandas or numpy inputs.
 
@@ -847,7 +1007,7 @@ def plot_confusion_matrix(y_true, y_pred, labels=None, title="Confusion Matrix")
     if labels is None:
         labels = sorted(list(set(y_true) | set(y_pred)))
 
-    fig, ax = plt.subplots(figsize=(6, 5))
+    _, ax = plt.subplots(figsize=(6, 5))
     im = ax.imshow(cm, interpolation='nearest')
 
     ax.set_title(title)
@@ -870,8 +1030,17 @@ def plot_confusion_matrix(y_true, y_pred, labels=None, title="Confusion Matrix")
 
     plt.tight_layout()
     plt.show()
+    
+    return None
 
-def save_confusion_matrix(y_true, y_pred,  filename,labels=None, title=None):
+
+def save_confusion_matrix(
+    y_true:pd.Series,
+    y_pred:pd.Series,
+    filename:str,
+    labels:List[str] = None,
+    title:str = None
+    ):
     """
     saves a confusion matrix as png.
     same as plot confusion matrix but instead of plotting the matrix it saves it instead
@@ -888,7 +1057,7 @@ def save_confusion_matrix(y_true, y_pred,  filename,labels=None, title=None):
     if labels is None:
         labels = sorted(list(set(y_true) | set(y_pred)))
 
-    fig, ax = plt.subplots(figsize=(4, 3))
+    _, ax = plt.subplots(figsize=(4, 3))
     im = ax.imshow(cm, interpolation='nearest')
 
     ax.set_title(title)
@@ -910,20 +1079,25 @@ def save_confusion_matrix(y_true, y_pred,  filename,labels=None, title=None):
     plt.tight_layout()
     plt.savefig(filename)
     plt.close()
+    
+    return None    
 
-def show_all_matrices(n_splits=10):
+
+def show_all_matrices(n_splits=10) -> None:
     """
     displayes saved confusion matrices in 2 row format
-    Parameters:
-    pram: n_splits - the number of saved matrices
+    
+    :param: n_splits: the number of saved matrices
+    :return: None
     """
     cols = (n_splits // 2)
     rows = 2
 
-    fig, axes = plt.subplots(rows, cols, figsize=(4 * cols, 8))
-    axes = axes.flatten()  # flatten to 1D list for easy indexing
-
-    # If only 1 subplot, wrap in list so indexing works
+    _, axes = plt.subplots(rows, cols, figsize=(4 * cols, 8))
+    # Flattening for easier indexing
+    axes = axes.flatten()  
+    
+    # Wrapping in list in case of 1 split
     if n_splits == 1:
         axes = [axes]
 
@@ -942,26 +1116,30 @@ def show_all_matrices(n_splits=10):
 
     plt.tight_layout()
     plt.show()
+    
+    return None
 
 
-def cleanup_confusion_matrices():
+def cleanup_confusion_matrices() -> None:
     """
-    goes thrue all the files in project folder and deletes saved confusion matrices
+    goes through all the files in project folder and deletes saved confusion matrices
     """
     files = glob.glob("confusion_fold_*.png")
 
     if not files:
-        print("No confusion matrix images found to delete.")
+        logger.info("No confusion matrix images found to delete.")
         return
 
     for f in files:
         try:
             os.remove(f)
-            print(f"Deleted: {f}")
+            logger.info(f"Deleted: {f}")
         except Exception as e:
-            print(f"Could not delete {f}: {e}")
+            logger.info(f"Could not delete {f}: {e}")
+            
 
-    print("Cleanup complete.")
+    logger.info("Cleanup complete.")
+    return None
 
 
 
@@ -981,43 +1159,78 @@ if __name__ == "__main__":
     if df is not None:
         # Základní předzpracování
         df = preprocess_data(df=df)
-        display(df)
+        
         # Odstranění řádků s chybějící cílovou hodnotou
         df = del_missing(df=df)
-        #   Ořezání extrémních hodnot -> menší MCC než logaritmická
-        #   df = clip_physiological_values(df=df)
-        #display(df)
         
-        #%%%
+        #   Ořezání extrémních hodnot -> menší MCC než logaritmická
+        df = clip_physiological_values(df=df)
+        
         # Doplnění chybějících hodnot
         df = fill_miss_values(df=df)
-        # Vytvoření nových features
-        df = create_features(df=df)
-        #display(df)
-        # Aplikace logaritmické transformace
-        # df = apply_log_transform(df=df)
-        display(df)
-        # Škálování
-        # df = scale_data(df=df)
-        display(df)
+        # nie až tak ideálne, v realite by to tu nemalo byť na celý dataset, ale asi v pohode, 
+        # keďže majú skrytý dataset
+        # TODO: funkcia, ktorá zvlášť doplní NaNs pre trénovací a validačný dataset
+        
+        
         logger.info('Data preprocessing completed')
-        # print('Počet chybějících hodnot (NaN) v každém sloupci po základním zpracování:')
-        # print(df.isnull().sum()) # Správně nuly...
 
-        #%%%
         graph_data(df=df)
 
         #%%%
-        # train_x, val_x, y_train, y_val = split_data(data=df)
+        
+        # Train test splitting
+        train_x, val_x, y_train, y_val = split_data(data=df)
+        
+        # Creating training dataset to prevent data leakage
+        df_train = pd.concat([train_x, y_train], axis=1)
+        # Calculating clinically relevant features
+        # df_train = create_features(df=df_train)
+        # Applying log trasform
+        df_train = apply_log_transform(df=df_train)
+        df_train = scale_data(df=df_train)
+        display(df_train)
+        
+        #%%%
+        #df_val = pd.concat([val_x,y_val],axis=1)
+        # Calculating clinically relevant features
+        # df_val = create_features(df=df_val)
+        # Applying log trasform
+        #df_val = apply_log_transform(df=df_val)
+        #df_val = scale_data(df=df_val)
+        #display(df_val)
+     
+        #%%%
+        # Splitting data into transformed training
+        train_x, _, y_train, _ = split_data(data=df_train,test_size=None)
+        
         # acc = xgb_classify(train_x, val_x, y_train, y_val)
-        if 'Selector' not in df.columns:
-            logger.error('"Selector" is not in the DataFrame, cannot continue.')
-        else:
-            Y = df['Selector'].copy()
-            X = df.drop('Selector', axis=1).copy()
+        # if 'Selector' not in df.columns:
+        #     logger.error('"Selector" is not in the DataFrame, cannot continue.')
+        # else:
+        #     Y = df['Selector'].copy()
+        #     X = df.drop('Selector', axis=1).copy()
 
-            evaluate_model(X, Y)
+        #     evaluate_model(X, Y)
             
-        #TODO: confusion matrix
-        confusion_matrix()
-#TODO: feature importance pre and post log transform
+        best_params, best_val = bayes_optimize(X=train_x,y=y_train)
+        
+        #%%%
+        logger.info(f'Best parameters: {best_params} \nWith best Value: {best_val}')
+        
+        #val_x, _, y_val, _ = split_data(data=df_val, test_size=None)
+        
+        #%%%
+        model = XGBClassifier(**best_params, n_jobs=-1)
+        model.fit(train_x,y_train)
+        y_pred = model.predict(val_x)
+        
+        plot_confusion_matrix(y_val,y_pred=y_pred)
+        #%%%
+        
+        print(y_train.value_counts())
+        print(y_train.value_counts(normalize=True))
+        
+        #%%%
+        logger.info(f'MCC: {matthews_corrcoef(y_true=y_val,y_pred=y_pred)}')
+        logger.info(f'ACC: {accuracy_score(y_true=y_val,y_pred=y_pred)}')

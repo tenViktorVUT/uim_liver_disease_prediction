@@ -9,3 +9,4 @@ jupyter
 scikit-learn
 xgboost
 imblearn
+optuna
