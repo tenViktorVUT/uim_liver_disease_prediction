@@ -12,6 +12,19 @@
 # TODO: Model exportovať ako model a separe testing script
 # - augmentace sa nepoužíva pri testovacích dátach
 
+# LAST PUSH DELETED/ALTERED
+# fill_miss_values -> deleted, handled inside the pipeline
+# clip_physiological_values -> deleted, log should be more robust
+# apply_log_transform -> deleted, replaced by LogTransformer class
+# scale_data -> deleted, scaling inside pipeline
+# create_features -> deleted, transformer replaces it
+# xgb_classify -> replaced by train_model (pipeline + Optuna params)
+# ADDED:
+# optuna_objective -> Merges optuna_objective and bayes_optimize (both Optuna wrappers)
+# WORTH TRYING
+# threshold moving
+# Feature selection
+# Trying RF or Logistic regression instead of XGBoost
 
 """
 LIVER DISEASE PREDICTION
@@ -33,6 +46,10 @@ In order to succesfully run this script it requires
 Data folder to be in the same directory as the script.
 """
 
+# =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+#                       Imports
+# =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+
 # importing dependencies
 # built-in libs
 import os
@@ -51,6 +68,8 @@ import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
+from qdm.sklearn.metrics import cohen_kappa_score, matthews_corrcoef
+from sklearn.base import BaseEstimator, TransformerMixin
 # from qdm.pandas.tests.resample.test_resample_api import df_mult
 
 # Principal component analysis
@@ -63,7 +82,7 @@ from sklearn.model_selection import (
 from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import KNNImputer, SimpleImputer
-from sklearn.preprocessing import RobustScaler, OneHotEncoder
+from sklearn.preprocessing import RobustScaler, OneHotEncoder, StandardScaler, PowerTransformer
 from sklearn.metrics import (
     classification_report,
     confusion_matrix,
@@ -73,7 +92,8 @@ from sklearn.metrics import (
     f1_score,
     accuracy_score,
     matthews_corrcoef,
-    make_scorer
+    make_scorer,
+    roc_curve
 )
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.decomposition import PCA
@@ -114,88 +134,336 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def load_file(filename: str) -> pd.DataFrame:
+
+# =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+#                       TRANSFORMERS
+# =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+
+class PhysiologicalFeatureEngineer(BaseEstimator, TransformerMixin):
     """
-    Loads CSV data under filename into 2 pandas DataFrames
-    :param (str) filename: name of the file
-    :return rdf: raw DataFrame
-    :return df: deep copy DataFrame
+    Custom Scikit-Learn transformer to create clinical features. Preventing data leakage.
+    Creates:
+        AST/ALT ratio
+        Globulin (Total Protein - Albumin)
+        A/G ratio recalculation as failsafe check
     """
 
+    def fit(self,X, y=None):
+        return self
+    def transform(self,X):
+        # Working on a copy to avoid warnings
+        X = X.copy()
+        epsilon = 1e-6 # Future prevention to division by zero
+
+        if isinstance(X, pd.DataFrame):
+            # AST/ALT ratio
+            if 'Sgot' in X.columns and 'Sgpt' in X.columns:
+                X['AST_ALT_Ratio'] = X['Sgot'] / (X['Sgpt'] + epsilon)
+
+            if 'TP' in X.columns and 'ALB' in X.columns:
+                X['Globulin_Calc'] = X['TP']-X['ALB']
+            if 'ALB' in X.columns and 'Globulin_Calc' in X.columns:
+                X['AG_Ratio_Recalc'] = X['ALB'] / (X['Globulin_Calc'] + epsilon)
+
+        return X
+
+class LogTransformer(BaseEstimator, TransformerMixin):
+    """
+    Applies Log1p transformation to reduce skewness in data.
+    """
+    def __init__(self, cols=None):
+        self.cols = cols
+    def fit(self, X, y=None):
+        return self
+    def transform(self, X):
+        X = X.copy()
+        if isinstance(X, pd.DataFrame):
+            target_cols = self.cols if self.cols else X.columns
+            for col in target_cols:
+                if col in X.columns:
+                    # Only log positive vals
+                    X[col] = np.log1p(X[col].clip(lower=0))
+        return X
+
+# =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+#                       CORE FUNCS
+# =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+
+def load_file(filename:str) -> pd.DataFrame:
+    """
+    Loads CSV data
+    :param filename: Name of the file
+    :return: Raw DF
+    """
     try:
-        # Finding path
-        cwd = os.getcwd()
-        path = os.path.join(cwd, filename)
-        rdf = pd.read_csv(path)
+        if not os.path.exists(filename):
+            raise FileNotFoundError(f'File {filename} was not found.')
 
-        # Creates deep copy of df
-        df = rdf.copy(deep=True)
-        logger.info(f'File {filename} loaded succesfully. \n')
-
-        # print(f'Dataset obsahuje {df.shape[0]} řádků a {df.shape[1]} sloupců.')
-        # TEST PRINT
-        # print(df.head())
-        return rdf, df
-
-    except FileNotFoundError:
-        logger.info(f'File {path} was not found in directory.')
+        df = pd.read_csv(filename)
+        logger.info(f'File {filename} loaded successfully. Shape: {df.shape}')
+        return df
+    except Exception as e:
+        logger.error(f'Error loading file: {e}')
         return None
-
 
 def preprocess_data(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Preprocesses data into a clean working DataFrame.
-    Takes in raw data frame and replaces non-sense values with
-    NaNs
-    :param (pd.DataFrame) df: unprocessed DataFrame
-    :return df: clean preprocessed data with nonsense values replaced by NaNs
+    Performes cleaning and initial mapping
+    Maps gender : Male->0, Female->1
+    Maps Selector: 2->0 Healthy, 1->1 Disease
+    Detects and removes impossibilities
+    :param df: Raw DF
+    :return: Cleaned DF
     """
 
-    ### REFORMATTING SELECTOR OUTPUT INTO BINARY VALUES
-    if 'Selector' not in df.columns:
-        # raises error in case of missing selector column
-        raise NameError("Selector column missing in the DataFrame")
+    logger.info('Preprocessing data and cleaning physiological errors...')
+    df = df.copy()
+    # Target mapping
+    #   Orig: 1 = Patient, 2 = Healthy
+    #   New:  1 = Patient, 0 = Healthy
+    if 'Selector' in df.columns:
+        df['Selector'] = df['Selector'].map({1: 1, 2: 0})
+    # Gender encoding
+    if 'Gender' in df.columns:
+        df['Gender'] = df['Gender'].map({'Male': 0, 'Female': 1})
+    # Removing impossible negatives
+    numerical_cols = df.select_dtypes(include=[np.number]).columns
+    feature_cols = [col for col in df.columns if col not in ['Selector']]
 
-    # mapping binary values onto selector column
-    # 1: pathological 2->0:healthy
-    df['Selector'] = df['Selector'].map({1: 0, 2: 1})
-
-    ### REPLACING NON-SENSE AGE
-    df.loc[df['Age'] > 110, 'Age'] = np.nan
-
-    ### REFORMATTING GENDER INTO BINARY, DISCRETE VALUES
-    df['Gender'] = df['Gender'].map({'Male': 0, 'Female': 1})
-
-    ### CORRECTING NEGATIVE VALUES
-    df[df < 0] = np.nan
+    for col in feature_cols:
+        neg_count = (df[col] < 0).sum()
+        if neg_count > 0:
+            logger.warning(f'Detected {neg_count} impossible negative values in "{col}". Converting to NaN.')
+            df.loc[df[col] < 0, col] = np.nan
+    # Age check
+    if 'Age' in df.columns:
+        df.loc[df['Age'] > 120, 'Age'] = np.nan # Oldest ever found 122
 
     return df
 
-
 def del_missing(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Removes entries with missing Selector value  NaN
+    Removes entries with missing Selector
     :param (pd.DataFrame) df: DataFrame
     :return df: DataFrame with removed missing Selector entries
     """
+    if 'Selector' not in df.columns:
+        return df
 
     logger.info('Removing entries with missing Selector...')
     raw_count = len(df)
-
     # Dropping entries with missing selector
     df.dropna(subset='Selector', inplace=True)
     new_count = len(df)
     # Number of dropped entries
     deleted = raw_count - new_count
-
     if deleted > 0:
         logger.info(f'Removed {deleted} entries with missing Selector')
     else:
         logger.info('No missing entries without Selector in the DataFrame')
-
     logger.info(f'Current number of entries in dataset: {new_count}')
 
     return df
+
+
+def split_data(df: pd.DataFrame, seed: int=42):
+    """
+    Splits data into Train and Test sets (Test is LOCKED till final eval).
+    :param df:
+    :param seed:
+    :return:
+    """
+    logger.info('Splitting data into Train and Test sets')
+
+    X = df.drop('Selector', axis=1)
+    y = df['Selector']
+
+    # Stratify for imbalanced set
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, stratify=y, random_state=seed
+    )
+
+    logger.info(f'Train Shape: {X_train.shape}, Test Shape: {X_test.shape}')
+    return X_train, X_test, y_train, y_test
+
+
+def get_pipeline(params: dict) -> ImbPipeline:
+    """
+    Constructing ML pipeline
+    Ensures Imputation/Scaling happens inside the cross-valid folds
+    :param params: Dictionary of XGBoost hyperparameters
+    :return: Configured Pipeline object
+    """
+    skewed_cols = ['TB', 'DB', 'Alkphos', 'Sgpt', 'Sgot', 'A/G Ratio']
+
+    pipeline = ImbPipeline(steps=[
+            ('imputer', SimpleImputer(strategy='median')),
+            ('scaler', StandardScaler()),
+            ('power', PowerTransformer(method='yeo-johnson', standardize=False)),
+            ('clf', RandomForestClassifier(**params, class_weight='balanced'))
+        ])
+    return pipeline
+
+
+def train_model(X_train, y_train, best_params):
+    """
+    Trains the final Pipeline on the full training set using best params.
+    Replaces "xgb_classify" func.
+    :param X_train:
+    :param y_train:
+    :param best_params:
+    :return:
+    """
+    logger.info('Training final model with best parameters...')
+
+     #Set up for XGBooster
+    final_params = best_params.copy()
+    final_params.update({'n_jobs':-1, 'random_state': 42, 'eval_metric': 'logloss'})
+    pipeline = get_pipeline(final_params)
+
+    """
+    # Set up for Random Forest
+    final_params = best_params.copy()
+    final_params.update({'n_jobs': -1, 'random_state': 42})
+    pipeline = get_pipeline(
+        final_params)
+    """
+    pipeline.fit(X_train, y_train)
+
+    return pipeline
+
+
+def evaluate_model(
+        model=None,
+        X: pd.DataFrame = None,
+        y: pd.Series = None,
+        X_test: pd.DataFrame = None,
+        y_test: pd.Series = None,
+        mode: str = "cv",
+        n_splits: int = 10,
+        seed: int = 42
+):
+    """
+    Evaluation function
+    Modes:
+        - "cv": Robust cross-validation with GridSearchCV + threshold tuning.
+        - "test": Final evaluation on held-out test set with bootstrap CI + plots.
+
+    :param model: Pretrained model (used in test mode).
+    :param X, y: Training features/labels (used in cv mode).
+    :param X_test, y_test: Test features/labels (used in test mode).
+    :param mode: "cv" or "test"
+    :param n_splits: Number of folds for CV (default 10).
+    :param seed: Random seed.
+    """
+
+    if mode == "cv":
+        logger.info(f"Starting {n_splits}-Fold Stratified CV evaluation...")
+        skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
+
+        fold_mccs, fold_accs, fold_thresholds = [], [], []
+        feature_importances = pd.DataFrame(index=X.columns)
+
+        param_grid = {
+            'n_estimators': [100, 250, 400],
+            'max_depth': [3, 5, 7, 9],
+            'learning_rate': [0.01, 0.05, 0.1],
+            'subsample': [0.7, 0.9, 1.0],
+            'colsample_bytree': [0.7, 0.9, 1.0]
+        }
+
+        scale_pos_weight = (y == 0).sum() / (y == 1).sum()
+        model_proto = XGBClassifier(
+            random_state=seed, n_jobs=-1, eval_metric='logloss',
+            scale_pos_weight=scale_pos_weight
+        )
+
+        for fold, (train_idx, val_idx) in enumerate(skf.split(X, y)):
+            logger.info(f"--- Fold {fold+1}/{n_splits} ---")
+            train_x, val_x = X.iloc[train_idx], X.iloc[val_idx]
+            y_train, y_val = y.iloc[train_idx], y.iloc[val_idx]
+
+            grid = GridSearchCV(model_proto, param_grid, scoring='roc_auc', cv=3, n_jobs=-1)
+            grid.fit(train_x, y_train)
+            best_model = grid.best_estimator_
+
+            y_proba = best_model.predict_proba(val_x)[:, 1]
+            thresholds = np.linspace(0.1, 0.9, 50)
+            best_thresh, best_mcc = 0.7, -1
+            for t in thresholds:
+                y_pred_t = (y_proba > t).astype(int)
+                mcc_t = matthews_corrcoef(y_val, y_pred_t)
+                if mcc_t > best_mcc:
+                    best_mcc, best_thresh = mcc_t, t
+
+            y_pred_best = (y_proba > best_thresh).astype(int)
+            acc = accuracy_score(y_val, y_pred_best)
+
+            fold_mccs.append(best_mcc)
+            fold_accs.append(acc)
+            fold_thresholds.append(best_thresh)
+
+            try:
+                fold_importances = pd.Series(best_model.feature_importances_, index=X.columns)
+                feature_importances[f'fold_{fold+1}'] = fold_importances
+            except Exception as e:
+                logger.warning(f"Could not get feature importances in fold {fold+1}: {e}")
+
+        logger.info("### CV Results ###")
+        logger.info(f"Avg MCC: {np.mean(fold_mccs):.4f} ± {np.std(fold_mccs):.4f}")
+        logger.info(f"Avg Accuracy: {np.mean(fold_accs):.4f} ± {np.std(fold_accs):.4f}")
+        logger.info(f"Avg Threshold: {np.mean(fold_thresholds):.4f}")
+
+        plot_feature_importance(feature_importances)
+        show_all_matrices(n_splits)
+        cleanup_confusion_matrices()
+
+    elif mode == "test":
+        logger.info("Evaluating model on TEST set...")
+        y_pred = model.predict(X_test)
+        y_proba = model.predict_proba(X_test)[:, 1]
+
+        mcc = matthews_corrcoef(y_test, y_pred)
+        kappa = cohen_kappa_score(y_test, y_pred)
+        auc = roc_auc_score(y_test, y_proba)
+        f1 = f1_score(y_test, y_pred)
+        acc = accuracy_score(y_test, y_pred)
+
+        rng = np.random.RandomState(42)
+        boot_scores = []
+
+        y_test_arr = np.array(y_test)
+        y_pred_arr = np.array(y_pred)
+
+        for _ in range(1000):
+            idx = rng.randint(0, len(y_test_arr), len(y_pred_arr))
+            if len(np.unique(y_test_arr[idx])) < 2: continue
+            boot_scores.append(matthews_corrcoef(y_test_arr[idx], y_pred_arr[idx]))
+        ci_lower, ci_upper = np.percentile(boot_scores, [2.5, 97.5])
+
+        print("\n" + "=-" * 30)
+        print("   FINAL CLINICAL MODEL EVALUATION   ")
+        print("=-" * 60)
+        print(f"MCC: {mcc:.4f} (95% CI: [{ci_lower:.4f}, {ci_upper:.4f}])")
+        print(f"Kappa: {kappa:.4f}")
+        print(f"AUC: {auc:.4f}")
+        print(f"F1: {f1:.4f}")
+        print(f"Accuracy: {acc:.4f}")
+        print("Classification Report:\n")
+        print(classification_report(y_test, y_pred, target_names=['Healthy','Patient']))
+
+        cm = confusion_matrix(y_test, y_pred)
+        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+                    xticklabels=['Healthy','Patient'], yticklabels=['Healthy','Patient'])
+        plt.title(f"Confusion Matrix (MCC={mcc:.2f})")
+        plt.show()
+
+        fpr, tpr, _ = roc_curve(y_test, y_proba)
+        plt.plot(fpr, tpr, label=f"AUC={auc:.3f}", color='darkorange')
+        plt.plot([0,1],[0,1],'--',color='navy')
+        plt.title("ROC Curve")
+        plt.legend()
+        plt.show()
 
 
 def graph_data(df: pd.DataFrame) -> None:
@@ -286,10 +554,10 @@ def graph_data(df: pd.DataFrame) -> None:
         plt.title('Rozdělení pacientů podle pohlaví')
         plt.xlabel('Pohlaví (0=Muž, 1=Žena)')
         plt.ylabel('Počet')
-        
+
         # debugging pring
         # plt.show()
-        
+
         return None
 
     # Function calling
@@ -302,475 +570,114 @@ def graph_data(df: pd.DataFrame) -> None:
     return None
 
 
-def fill_miss_values(df: pd.DataFrame) -> pd.DataFrame:
+def optuna_optimize(
+        X: pd.DataFrame,
+        y: pd.Series,
+        n_trials: int = 50,
+        metric: str = "mcc"
+):
     """
-    Fills in missing values (NaNs) using KNNImputer for continuous data
-    and most common value (modus) for discrete categoricacl data.
-    :param (pd.DataFrame) df: DataFrame of preprocessed data
-    :return df_imputed: DataFrame with filled-in NaNs
+    Flexible Optuna optimization func.
+    Allows optimization for MCC, ROC AUC, or F1.
+    Uses StratifiedKFold CV for stability.
+
+    :param X: Training features
+    :param y: Training labels
+    :param n_trials: Number of Optuna trials
+    :param metric: Metric to optimize ("mcc", "roc_auc", "f1")
+    :return: best_params, best_value
     """
+    logger.info(f"Starting Optuna Optimization ({n_trials} trials) optimizing {metric.upper()}...")
 
-    logger.info('Filling in missing values...')
-    
-    # Oddělení hodnoty kterou nechci upravovat
-    selector_col = False
-    if 'Selector' in df.columns:
-        df_target = df['Selector'].copy(deep=True)
-        df_features = df.drop('Selector', axis=1)
-        selector_col = True
-    else:
-        df_features = df.copy()
-
-    # Rozdělení sloupců na numerická a kategorické
-    categorical_features = [
-        col for col in df_features.columns
-        if (
-            df_features[col].dtype.name in ['object', 'category']
-            ) or (
-                df_features[col].nunique(dropna=True) <= 5
-                )
-    ]
-    numerical_features = [
-        col for col in df_features.columns if col not in categorical_features
-        ]
-
-    logger.info(
-        f'Found {len(numerical_features)} numerical features.\n'
-    )
-    logger.info(
-        f'Found {len(categorical_features)} categorical features.\n'
-    )
-
-    # Transformers
-    # 5 neighbors
-    numerical_transformer = Pipeline(steps=[
-        ('impute', KNNImputer(n_neighbors=5))
-    ])
-    categorical_transformer = Pipeline(steps=[
-        ('impute', SimpleImputer(strategy='most_frequent'))
-    ])
-
-    # Combining Transformers
-    preproc = ColumnTransformer(
-        transformers=[
-            ('num', numerical_transformer, numerical_features),
-            ('cat', categorical_transformer, categorical_features)
-        ], remainder='passthrough'
-    )
-
-    # Pozor, preprocessor vrací NumPy
-    df_imputed_array = preproc.fit_transform(df_features)
-    new_columns_order = numerical_features + categorical_features
-    df_imputed = pd.DataFrame(
-        df_imputed_array,
-        columns=new_columns_order,
-        index=df_features.index
-    )
-    # Původní pořadí sloupců
-    df_imputed = df_imputed[df_features.columns]
-
-    # Připojení 'Selector'
-    if selector_col:
-        df_imputed = pd.concat([df_imputed, df_target], axis=1)
-
-    logger.info('Finished filling in missing values')
-
-    return df_imputed
-
-
-def split_data(
-        data: pd.DataFrame,
-        seed: int = 42,
-        *args
-) -> pd.DataFrame:
-    """
-    Splits data into training and validation data
-
-    :param (pd.DataFrame) data: original data
-    :param (int) seed: seed for random train/test split state
-    :param *args: any arguments that will be passed into tts
-    :return train_x: training data
-    :return val_x: validation data
-    :return train_y: training for error
-    :return val_y: validation error
-    """
-
-    logger.info('Splitting data into training and testing sets...')
-
-    # Getting all columns names
-    features = data.columns
-    # Removing our Y from the list -> Selector
-    features = [col for col in features if col != 'Selector']
-
-    # Assigning X, Y
-    Y = data.Selector
-    X = data[features]
-    (
-        train_x, val_x, y_train, y_val
-    ) = train_test_split(
-        X, Y, args,
-        random_state=seed
-    )
-
-    return train_x, val_x, y_train, y_val
-
-
-def xgb_classify(
-        train_x: pd.DataFrame, val_x: pd.DataFrame,
-        y_train: pd.Series, y_val: pd.Series
-) -> float:
-    """
-    Creates and trains XGB classifier
-    :param (pd.DataFrame) train_x: training set
-    :param (pd.DataFrame) val_x: validation set
-    :param (pd.Series) train_y: training target
-    :param (pd.Series) val_y: validation target
-    :return Tuple:
-    """
-
-    logger.info('Training XGBClassifier...')
-
-    # Creating model
-    model = XGBClassifier(eta=0.005)
-    model.fit(train_x, y_train)
-
-    # Getting target predictions
-    y_pred = model.predict(val_x)
-
-    # Evaluating performance
-    acc = accuracy_score(y_true=y_val, y_pred=y_pred)
-
-    logger.info(f'Training complete. \nModel predicted target with overall accuracy: {acc}')
-    return acc
-
-
-def evaluate_model(
-    X: pd.DataFrame,
-    Y: pd.Series,
-    n_splits: int = 10,
-    seed: int = 42):
-    """
-    Does a robust evaluation of model with the help of stratificated cross validation.
-    Implements a complete pipeline for training and evaluation:
-        1. Splits data into 'n_splits' folds with the 'StratifiedKFold'
-        2. For each fold:
-            a. Computes 'scale_pos_weight' for class balancing in XGBoost
-            b. Launches 'GridSearchCV' (3-fold embedded CV)  to find the best
-                hyperparameters in training data. Optimizes on 'roc_auc'.
-            c. On validation data does a manual search for optimal threshold
-                for the maximum MCC
-            d. Saves final MCC and ACC for this fold
-            e. Saves score from the training data for overfitting diagnostics
-        3. Prints average MCC, ACC, optimal threshold and training score
-        4. Shows graph of the average importance across folds
-
-    :param X: pd.DataFrame
-                DataFrame with final features
-    :param Y: pd.Series
-                Series with target value
-    :param n_splits: int, optional
-                Number of folds for cross validation (default: 10)
-    :param seed: int, optional
-                Random state to find out reproductability (default: 42).
-    :return:
-        None
-    """
-    logger.info(
-        f'Starting the validation of the model ({n_splits}-Fold Stratified K-Fold)...'
-        )
-    skf = StratifiedKFold(
-        n_splits=n_splits,
-        shuffle=True,
-        random_state=seed
-        )
-    
-    # Seznamy pro ukládání výsledků z foldů
-    fold_accuracies = []
-    fold_mccs = []
-    fold_thresholds = []
-    
-    # Seznamy pro diagnostiku přeučení
-    fold_train_mccs = []
-    fold_train_aucs = []
-    
-    # DataFrame pro ukládání důležitosti rysů z foldů
-    feature_importances = pd.DataFrame(index=X.columns)
-
-    # =========== GRID a PIPELINE pro scale_pos_weight ===========
-    param_grid = {
-        'n_estimators': [100, 250, 400],  # Počet stromů
-        'max_depth': [3, 5, 7, 9],  # Hloubka stromů
-        'learning_rate': [0.01, 0.05, 0.1],  # Kroky učení
-        'subsample': [0.7, 0.9, 1.0],  # Procento řádků (pacientů)
-        'colsample_bytree': [0.7, 0.9, 1.0]  # Procento rysů (sloupců)
-    }
-    # Výpočet váhy
-    try:
-        scale_pos_weight = (Y == 0).sum() / (Y == 1).sum()
-        logger.info(f'Calculated scale_pos_weight for imbalance: {scale_pos_weight:.4f}')
-    except ZeroDivisionError:
-        logger.warning('Positive class (1) has zero samples. Setting scale_pos_weight to 1.')
-        scale_pos_weight = 1
-    # Prorotyp pro XGBoost
-    model_proto = XGBClassifier(
-        random_state=seed,
-        n_jobs=-1,
-        eval_metric='logloss',
-        scale_pos_weight=scale_pos_weight
-    )
-
-    # =========== GRID a PIPELINE pro SMOTE ===========
-    # Pre budúcnosť radšej ponechaný
-    """
-    param_grid = {
-        'model__n_estimators': [100, 250],
-        'model__max_depth': [3, 5, 7],
-        'model__learning_rate': [0.01, 0.1],
-        'model__subsample': [0.8, 1.0]
-    }
-
-    param_grid = {
-        'model__n_estimators': [100, 250, 400],     # Počet stromů
-        'model__max_depth':    [3, 5, 7, 9],      # Max hloubka stromu
-        'model__learning_rate':[0.01, 0.05, 0.1],    # Rychlost učení
-        'model__subsample':    [0.7, 0.9, 1.0]      # % dat pro trénování každého stromu
-        'model__colsample_bytree': [0.7, 0.9, 1.0]
-    }
-
-    # Pipeline pro aplikaci SMOTE
-        # SMOTE jen na trénovací data !
-    pipeline = ImbPipeline(steps=[
-        ('smote', SMOTE(random_state=seed)),
-        ('model', XGBClassifier(
-            random_state=seed,
-            n_jobs=-1,
-            eval_metric='logloss'
-        ))
-    ])
-    """
-
-    # Hlavní smyčka pro křížovou validaci
-    for fold, (train_index, val_index) in enumerate(skf.split(X, Y)):
-        logger.info(f'--- Fold {fold + 1}/{n_splits} ---')
-        # Rozdělení dat na trénovací a validační pro tento fold
-        train_x, val_x = X.iloc[train_index], X.iloc[val_index]
-        y_train, y_val = Y.iloc[train_index], Y.iloc[val_index]
-
-        # GridSearchCV
-        # Hledání nejlepších parametrů, ale pouze na trénovacích datech
-        # 'cv=3' -> 3-Fold CV uvnitř jednoho foldu
-        # Optimalizace na "roc_auc"
-        grid_search = GridSearchCV(
-            estimator=model_proto,  # pipeline=SMOTE, modelproto=scale_pos_weight
-            param_grid=param_grid,
-            scoring='roc_auc',  # Ješte může být f1_weighted nebo mcc
-            cv=3,  # 3-fold CV v tomto foldu
-            n_jobs=-1,
-            verbose=0  # Pro více logů nastavit na 1
-        )
-
-        logger.info(f'Fold {fold + 1}: Starting GridSearchCV with SMOTE...')
-        grid_search.fit(train_x, y_train)
-        # Nejlepší model z tohoto foldu
-        # best_pipeline = grid_search.best_estimator_        # pipeline -> SMOTE
-        best_model = grid_search.best_estimator_  # model -> weight
-
-        logger.info(f'Fold {fold + 1}: Best params found: {grid_search.best_params_}')
-        logger.info(f'Fold {fold + 1}: Best internal CV score (ROC AUC): {grid_search.best_score_:.4f}')
-
-        # Hledání optimálního prahu (Thresholding) (na validačních)
-
-        # y_pred_proba = best_pipeline.predict_proba(val_x)[:,1]     # -> SMOTE
-        # Pravděpodobnost pro třídu 1 (nemocný)
-        y_pred_proba = best_model.predict_proba(val_x)[:, 1]  # -> weight
-        # 50 prahů
-        thresholds = np.linspace(0.1, 0.9, 50)  # 50 prahů
-        best_mcc = -1.0  # -1 -> 1 range
-        best_thresh = 0.5
-
-        for thresh in thresholds:
-            # Pravděpodobnosti -> binární predikce
-            y_pred_thresh = (y_pred_proba > thresh).astype(int)
-            # MCC pro tento práh
-            current_mc = matthews_corrcoef(y_val, y_pred_thresh)
-
-            if current_mc > best_mcc:
-                best_mcc = current_mc
-                best_thresh = thresh
-        logger.info(f'Fold {fold + 1}: Best threshold found {best_thresh:.4f} (gives MCC: {best_mcc:.4f}')
-
-        # Finální predikce s nejlepším prahem
-        y_pred_best = (y_pred_proba > best_thresh).astype(int)
-
-        # Predikce na validačních datech
-        # y_pred = best_pipeline.predict(val_x)
-
-        # Evaluace (na VALIDAČNÍCH), s optimálním prahem
-        acc = accuracy_score(y_true=y_val, y_pred=y_pred_best)
-        mcc = best_mcc
-        #confusion matrix
-        filename = f"confusion_fold_{fold}.png"
-        save_confusion_matrix(
-            y_true=y_val,
-            y_pred=y_pred_best,
-            filename=filename,
-            title=f"Fold {fold}"
-        )
-
-        fold_accuracies.append(acc)
-        fold_mccs.append(mcc)
-        fold_thresholds.append(best_thresh)
-
-        # Diagnostika přeučení (na trénikových datech)
-        # y_train_proba = best_pipeline.predict_proba(train_x)[:,1]      # -> SMOTE
-        y_train_proba = best_model.predict_proba(train_x)[:, 1]  # -> weight
-        y_train_pred = (y_train_proba > best_thresh).astype(int)
-        train_mcc = matthews_corrcoef(y_train, y_train_pred)
-        train_auc = roc_auc_score(y_train, y_train_proba)
-
-        fold_train_mccs.append(train_mcc)
-        fold_train_aucs.append(train_auc)
-
-        logger.info(f'Fold {fold + 1} Train MCC: {train_mcc:.4f} | Val MCC: {mcc:.4f}')
-        logger.info(f'Fold {fold + 1} Train AUC: {train_auc:.4f} | Val AUC: {grid_search.best_score_:.4f}')
-
-
-        # Uložení důležitých rysů
-        try:
-            # model_in_pipeline = best_pipeline.named_steps['model']     # -> SMOTE
-            # fold_importances = pd.Series(model_in_pipeline.feature_importances_, index=X.columns)   # -> SMOTE
-            fold_importances = pd.Series(best_model.feature_importances_, index=X.columns)
-            feature_importances[f'fold_{fold + 1}'] = fold_importances
-        except Exception as e:
-            logger.warning(f'Could not get feature importances in fold {fold + 1}. Error: {e}')
-
-    # Final results
-    logger.info(
-        f'Validation done.'
-        )
-    logger.info(
-        '### Average validation scores ###'
-        )
-    logger.info(
-        f'Average accuracy: {np.mean(fold_accuracies):.4f} +/- {np.std(fold_accuracies):.4f}'
-        )
-    logger.info(
-        f'Average MCC: {np.mean(fold_mccs):.4f} +/- {np.std(fold_mccs):.4f}'
-        )
-    logger.info(
-        f'Average optimal threshold: {np.mean(fold_thresholds):.4f} +/- {np.std(fold_thresholds):.4f}'
-        )
-
-    logger.info(
-        ' ### Average Training Scores (Overfitting Check) ###'
-        )
-    logger.info(
-        f'Average Train MCC: {np.mean(fold_train_mccs):.4f} +/- {np.std(fold_train_mccs):.4f}'
-        )
-    logger.info(f'Average Train AUC: {
-        np.mean(fold_train_aucs):.4f} +/- {np.std(fold_train_aucs):.4f}'
-        )
-    # Plot výsledek
-    filename = f"confusion_fold_{fold}.png"
-
-
-    plot_feature_importance(feature_importances)
-
-    show_all_matrices(n_splits)
-    cleanup_confusion_matrices()
-
-
-# Hyperparameter optimization using bayesian optimization
-def bayes_optimize(
-    X: pd.DataFrame,
-    y:pd.Series,
-    draw:bool = False
-    ) -> Tuple[np.ndarray, float]:
-    """
-    Encapsulation function for the objective function.
-    Feeds data into optuna objective.
-    
-    Creates an optuna study and using bayesian optimization.
-    finds the best hyperparameters in order 
-    to maximize roc and auc. 
-    
-    
-    Returns best parameters and best value based on 
-    cross validation score.
-    
-    :param (pd.DataFrame) X:
-        train features and their values 
-    :param (pd.Series) y:
-        train target (without splitting)
-    :param (bool) draw: hides/plots optuna optimization
-    :return Tuple[np.ndarray, float]:
-        best_param: best parameters for xgboost \n
-        best_value: best roc and auc
-    """
-    
-    
-    def objective(
-        trial:int
-        ) -> np.ndarray:
-        """
-        Objective for obtuna bayesian optimisation.
-    
-        :param (int) trial: number of trials
-        :return np.ndarray: nDarray of cross_validation score
-        """
+    def objective(trial):
+        # PARAMS FOR XGBoost
         params = {
-            "max_depth": trial.suggest_int("max_depth", 3, 15),
-            "learning_rate": trial.suggest_float("learning_rate", 0.01, 0.3,log=True),
-            "min_child_weight": trial.suggest_int("min_child_weight", 0, 50),
-            "gamma": trial.suggest_float("gamma", 1e-8, 1.0,log=True),
-            "subsample": trial.suggest_float("subsample", 0.5, 1.0),
-            "colsample_bytree": trial.suggest_float("colsample_bytree", 0.5, 1.0),
-            "reg_alpha": trial.suggest_float("reg_alpha", 1e-8, 10.0,log=True),
-            "reg_lambda": trial.suggest_float("reg_lambda", 1e-8, 10.0,log=True),
-            "n_estimators": trial.suggest_int("n_estimators", 100, 500),
-            "eval_metric": "logloss"
+            'n_estimators': trial.suggest_int('n_estimators', 100, 600),
+            'max_depth': trial.suggest_int('max_depth', 3, 10),
+            'learning_rate': trial.suggest_float('learning_rate', 0.01, 0.3, log=True),
+            'subsample': trial.suggest_float('subsample', 0.6, 1.0),
+            'colsample_bytree': trial.suggest_float('colsample_bytree', 0.6, 1.0),
+            'gamma': trial.suggest_float('gamma', 0, 5),
+            'reg_alpha': trial.suggest_float('reg_alpha', 1e-8, 1.0, log=True),
+            'reg_lambda': trial.suggest_float('reg_lambda', 1e-8, 1.0, log=True),
+            'eval_metric': 'logloss',
+            'n_jobs': -1,
+            'random_state': 42
         }
+        """
+        # PARAMS for Random Forest
+        params = {
+            'n_estimators': trial.suggest_int('n_estimators', 100, 500),
+            'max_depth': trial.suggest_int('max_depth', 3, 15),
+            'min_samples_split': trial.suggest_int('min_samples_split', 2, 20),
+            'min_samples_leaf': trial.suggest_int('min_samples_leaf', 1, 10),
+            'max_features': trial.suggest_categorical('max_features', ['sqrt', 'log2']),
+            'n_jobs': -1,
+            'random_state': 42
+        }
+        """
+        pipeline = get_pipeline(params)
+        cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
 
-        model = XGBClassifier(
-            **params
-            )
-        cv = StratifiedKFold(
-            n_splits = 5
-            )
-        
-        score = cross_val_score(
-            model,
-            X=X,
-            y=y,
-            scoring='roc_auc',
-            cv=cv,
-            n_jobs=-1
-            ).mean()
-        
-        return score
-    
-    # creating optuna study
-    study = optuna.create_study(
-        direction='maximize'
-        )
-    study.optimize(
-        objective,
-        n_trials=300,
-        timeout=300
-        )
-    
-    # plotting study details if draw is enabled
-    if draw:
-        fig = plot_optimization_history(
-            study
-        )
-        show(fig)
-        
-    # returns tuple
-    return (
-        study.best_params,
-        study.best_value
-        )
+        if metric == "mcc":
+            scorer = make_scorer(matthews_corrcoef)
+        elif metric == "roc_auc":
+            scorer = "roc_auc"
+        elif metric == "f1":
+            scorer = make_scorer(f1_score)
+        else:
+            raise ValueError(f"Unsupported metric: {metric}")
+
+        try:
+            scores = cross_val_score(pipeline, X, y, cv=cv, scoring=scorer, n_jobs=-1)
+            return scores.mean()
+        except Exception as e:
+            logger.warning(f"Trial failed: {e}")
+            return -1
+
+    study = optuna.create_study(direction="maximize")
+    study.optimize(objective, n_trials=n_trials)
+
+    logger.info(f"Best CV {metric.upper()}: {study.best_value:.4f}")
+    logger.info(f"Best Params: {study.best_params}")
+
+    return study.best_params, study.best_value
+
+
+def bootstrap_ci(y_true, y_pred, metric_func, n_bootstraps=1000):
+    """
+    Calcs 95% confidence interval using Bootstrapping.
+    Proving if model's performance is statistically significant.
+    :param y_true:
+    :param y_pred:
+    :param metric_func:
+    :param n_bootstraps:
+    :return:
+    """
+    bootstrapped_scores =[]
+    rng = np.random.RandomState(42)
+
+    y_true = np.array(y_true)
+    y_pred = np.array(y_pred)
+
+    for i in range(n_bootstraps):
+        # Randomly resampling indices with replacement
+        indices = rng.randint(0,len(y_pred), len(y_pred))
+        if len(np.unique(y_true[indices])) < 2:
+            continue # Skipping those who doesnt have both classes
+
+        score = metric_func(y_true[indices], y_pred[indices])
+        bootstrapped_scores.append(score)
+
+    sorted_scores = np.array(bootstrapped_scores)
+    sorted_scores.sort()
+
+    # 2.5th and 97.5th percentile
+    lower = sorted_scores[int(0.025 * len(sorted_scores))]
+    upper = sorted_scores[int(0.975 * len(sorted_scores))]
+
+    return lower, upper
+
 
 
 def plot_feature_importance(
@@ -810,181 +717,6 @@ def plot_feature_importance(
     plt.show()
     
     return None
-
-
-def create_features(
-    df: pd.DataFrame
-    ) -> pd.DataFrame:
-    """
-    Creates new, clinically relevant features from the existing data.
-    Has to be called after 'fill_miss_values', to avoid /NaN.
-    Calculates 2 new features
-        1. 'De_Ritis_Ratio': AST/ALT ratio
-        2. 'AG_Ratio_Calculated': Albumin/Globulin ratio
-    :param df: pd.DataFrame
-                DataFrame with already filled values
-    :return:
-        pd.DataFrame
-            Copy of original DataFrame with added features
-    """
-    logger.info('Creating new features...')
-    df_out = df.copy()
-    # Konstanta pro nedělení 0
-    epsilon = 1e-6
-
-    # De Ritisův poměr (AST/ALT)
-    # Sgot = AST, Sgpt = ALT
-    if 'Sgot' in df_out.columns and 'Sgpt' in df_out.columns:
-        sgpt_safe = df_out['Sgpt'].replace(0, epsilon)
-        df_out['De_Ritis_Ratio'] = df_out['Sgot'] / (sgpt_safe + epsilon)
-        logger.info('Created a feature "De_Ritis_Ratio" (Sgot/Sgpt).')
-    else:
-        logger.warning('Columns "Sgot" or "Sgpt" are missing for the calculation of "De_Ritis_Ratio"')
-
-    if 'TP' in df_out.columns and 'ALB' in df_out.columns:
-        globulin = df_out['TP'] - df_out['ALB']
-        globulin_safe = globulin.replace(0, epsilon)
-        df_out['AG_Ratio_Calculated'] = df_out['ALB'] / (globulin_safe + epsilon)
-        logger.info('Created a new feature "AG_Ratio_Calculated".')
-    else:
-        logger.warning('Column "TP" or "ALB" is missing and cannot calculate A/G Ratio.')
-
-    # Odstranění původního kdyby byl neposlehlivý
-
-    return df_out
-
-
-def scale_data(
-    df: pd.DataFrame
-    ) -> pd.DataFrame:
-    """
-    Application of RobustScales on all numerical features apart from "Gender" and
-    "Selector". "Selector" has to be in the DataFrame.
-    RobustScales helps with the outliers.
-    
-    :param df: pd.DataFrame
-                DataFrame that is supposed to scale. Needs a "Selector".
-                Should be called after log transformation.
-    :return:
-        pd.DataFrame
-            DataFrame with scaled features.
-    """
-    logger.info('Application of RobusScaler on the data...')
-    df_scaled = df.copy()
-
-    # Oddělení cílové proměnné
-    target = None
-    if 'Selector' in df_scaled.columns:
-        target = df_scaled.pop('Selector')
-    else:
-        logger.error('Error with scaling: "Selector" is missing in the data.')
-        return df
-    # Oddělení Gender
-    gender = None
-    if 'Gender' in df_scaled.columns:
-        gender = df_scaled.pop('Gender')  # Neškáluji Gender
-
-    features_to_scale = df_scaled.columns
-
-    if not features_to_scale.empty:
-        scaler = RobustScaler()
-        df_scaled_array = scaler.fit_transform(df_scaled)
-        # Dataframe zpátky
-        df_scaled = pd.DataFrame(df_scaled_array, columns=features_to_scale, index=df_scaled.index)
-
-    # Vrácení Selector a Gender
-    if gender is not None:
-        df_scaled = pd.concat([df_scaled, gender], axis=1)
-    if target is not None:
-        df_scaled = pd.concat([df_scaled, target], axis=1)
-
-    logger.info('Scaling was successful.')
-    return df_scaled
-
-
-def clip_physiological_values(
-    df: pd.DataFrame
-    ) -> pd.DataFrame:
-    """
-    Clipping extreme values (outliers) based on quantiles.
-    Helps the model not to learn from extreme values.
-    Clipping at 95th percentile.
-
-    This func was REPLACED by 'apply_log_transform', which appeared more robust.
-    :param df: DataFrame
-                DataFrame, with values for clipping
-    :return:
-        df_clipped: DataFrame with clipped values
-    """
-    logger.info('Clipping extreme outliers based on 99.5th percentile...')
-    df_clipped = df.copy()
-
-    features_to_clip = [
-        'TB',
-        'DB',
-        'Alkphos',
-        'Sgpt',
-        'Sgot',
-        'TP',
-        'ALB',
-        'A/G Ratio'
-    ]
-
-    for col in features_to_clip:
-        if col in df_clipped.columns:
-            # Výpočet percentilu
-            # Ošetření NaN
-            upper_limit = df_clipped[col].dropna().quantile(0.95)
-            values_to_be_clipped_count = (df_clipped[col] > upper_limit).sum()
-
-            if values_to_be_clipped_count > 0:
-                logger.info(
-                    f'Clipping {values_to_be_clipped_count} values in "{col}" (setting max to {upper_limit:.2f}')
-                # Clipping
-                df_clipped[col] = df_clipped[col].clip(upper=upper_limit)
-            else:
-                logger.info(f'No values to clip in "{col}".')
-        else:
-            logger.warning(f'Column "{col}" not found for clipping.')
-    logger.info('Clipping complete.')
-    return df_clipped
-
-
-def apply_log_transform(
-    df: pd.DataFrame
-    ) -> pd.DataFrame:
-    """
-    Uses logarithmical transform (log1p) on strongly skewed features.
-    Call AFTER fill_miss_values and BEFORE scaling.
-    :param df:
-        DataFrame with filled values.
-    :return:
-        pd.DataFrame
-            Copy of DataFrame with transformed columns
-    """
-    logger.info('Applying Log Transform (log1p) to skewed features...')
-    df_transformed = df.copy()
-
-    # Rysy s long-tail distribution
-    features_to_transform = [
-        'TB',
-        'DB',
-        'Alkphos',
-        'Sgpt',
-        'Sgot'
-    ]
-
-    # Iterates over features 
-    for col in features_to_transform:
-        if col in df_transformed.columns:
-            # Applies log transform in case of cold being transformable
-            df_transformed[col] = np.log1p(df_transformed[col])
-            logger.info(f'Log transform applied to "{col}".')
-        else:
-            # Throws warning else
-            logger.warning(f'Column "{col}" not found for log transform.')
-    logger.info('Log transform complete.')
-    return df_transformed
 
 
 def plot_confusion_matrix(
@@ -1143,94 +875,42 @@ def cleanup_confusion_matrices() -> None:
 
 
 
-# %%%
-#
-#
-#
-# --- Hlavní skript ---
+
+# =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+#                       Main Script
+# =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
+
+
 if __name__ == "__main__":
 
-    logger.info('Loading data file...')
-    # Načtení souboru
-    path = 'liver-disease_data.csv'
-    rdf, df = load_file(path)
+    # Load
+    filename = 'liver-disease_data.csv'
+    df = load_file(filename)
 
-    #%%%
     if df is not None:
-        # Základní předzpracování
-        df = preprocess_data(df=df)
-        
-        # Odstranění řádků s chybějící cílovou hodnotou
-        df = del_missing(df=df)
-        
-        #   Ořezání extrémních hodnot -> menší MCC než logaritmická
-        df = clip_physiological_values(df=df)
-        
-        # Doplnění chybějících hodnot
-        df = fill_miss_values(df=df)
-        # nie až tak ideálne, v realite by to tu nemalo byť na celý dataset, ale asi v pohode, 
-        # keďže majú skrytý dataset
-        # TODO: funkcia, ktorá zvlášť doplní NaNs pre trénovací a validačný dataset
-        
-        
-        logger.info('Data preprocessing completed')
+        # Clean & Preprocess
+        df = preprocess_data(df)
+        df = del_missing(df)
 
-        graph_data(df=df)
+        # Graphing (Optional, good for sanity check)
+        graph_data(df)
 
-        #%%%
-        
-        # Train test splitting
-        train_x, val_x, y_train, y_val = split_data(data=df)
-        
-        # Creating training dataset to prevent data leakage
-        df_train = pd.concat([train_x, y_train], axis=1)
-        # Calculating clinically relevant features
-        # df_train = create_features(df=df_train)
-        # Applying log trasform
-        df_train = apply_log_transform(df=df_train)
-        df_train = scale_data(df=df_train)
-        display(df_train)
-        
-        #%%%
-        #df_val = pd.concat([val_x,y_val],axis=1)
-        # Calculating clinically relevant features
-        # df_val = create_features(df=df_val)
-        # Applying log trasform
-        #df_val = apply_log_transform(df=df_val)
-        #df_val = scale_data(df=df_val)
-        #display(df_val)
-     
-        #%%%
-        # Splitting data into transformed training
-        train_x, _, y_train, _ = split_data(data=df_train,test_size=None)
-        
-        # acc = xgb_classify(train_x, val_x, y_train, y_val)
-        # if 'Selector' not in df.columns:
-        #     logger.error('"Selector" is not in the DataFrame, cannot continue.')
-        # else:
-        #     Y = df['Selector'].copy()
-        #     X = df.drop('Selector', axis=1).copy()
+        # Split
+        #   The Pipeline does imputing and scaling
+        X_train, X_test, y_train, y_test = split_data(df)
+        # Check balance
+        logger.info(f"Disease prevalence in Train: {y_train.mean():.2%}")
 
-        #     evaluate_model(X, Y)
-            
-        best_params, best_val = bayes_optimize(X=train_x,y=y_train)
-        
-        #%%%
-        logger.info(f'Best parameters: {best_params} \nWith best Value: {best_val}')
-        
-        #val_x, _, y_val, _ = split_data(data=df_val, test_size=None)
-        
-        #%%%
-        model = XGBClassifier(**best_params, n_jobs=-1)
-        model.fit(train_x,y_train)
-        y_pred = model.predict(val_x)
-        
-        plot_confusion_matrix(y_val,y_pred=y_pred)
-        #%%%
-        
-        print(y_train.value_counts())
-        print(y_train.value_counts(normalize=True))
-        
-        #%%%
-        logger.info(f'MCC: {matthews_corrcoef(y_true=y_val,y_pred=y_pred)}')
-        logger.info(f'ACC: {accuracy_score(y_true=y_val,y_pred=y_pred)}')
+        # Optimizing with Optuna
+        best_params, best_value = optuna_optimize(X_train, y_train, n_trials=50,metric='mcc')
+
+        # 6. Train Final Model
+        final_pipeline = train_model(X_train, y_train, best_params)
+
+        # CV evaluation
+        evaluate_model(X=X_train, y=y_train, mode="cv", n_splits=10)
+        # Final test evaluation with bootstrap CI
+        evaluate_model(model=final_pipeline, X_test=X_test, y_test=y_test, mode="test")
+
+
+
