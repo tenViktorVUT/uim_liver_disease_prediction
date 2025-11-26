@@ -68,7 +68,7 @@ import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
-from qdm.sklearn.metrics import cohen_kappa_score, matthews_corrcoef
+#from qdm.sklearn.metrics import cohen_kappa_score, matthews_corrcoef
 from sklearn.base import BaseEstimator, TransformerMixin
 # from qdm.pandas.tests.resample.test_resample_api import df_mult
 
@@ -89,6 +89,7 @@ from sklearn.metrics import (
     ConfusionMatrixDisplay,
     roc_auc_score,
     RocCurveDisplay,
+    cohen_kappa_score,
     f1_score,
     accuracy_score,
     matthews_corrcoef,
@@ -102,6 +103,7 @@ from torch.utils.hipify.hipify_python import preprocessor
 # Classificator XGBoost
 from xgboost import XGBClassifier
 from imblearn.over_sampling import SMOTE
+from imblearn.combine import SMOTETomek
 from imblearn.pipeline import Pipeline as ImbPipeline
 from plotly.io import show
 import optuna
@@ -300,7 +302,9 @@ def get_pipeline(params: dict) -> ImbPipeline:
             ('imputer', SimpleImputer(strategy='median')),
             ('scaler', StandardScaler()),
             ('power', PowerTransformer(method='yeo-johnson', standardize=False)),
-            ('clf', RandomForestClassifier(**params, class_weight='balanced'))
+            ('smote', SMOTETomek()),
+            #('clf', RandomForestClassifier(**params, class_weight='balanced'))
+            ('clf', XGBClassifier(**params, class_weight='balanced'))
         ])
     return pipeline
 
