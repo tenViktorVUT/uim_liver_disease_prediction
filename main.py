@@ -96,12 +96,15 @@ from sklearn.metrics import (
     make_scorer,
     roc_curve
 )
+from sklearn.feature_selection import mutual_info_classif
+from sklearn.feature_selection import mutual_info_regression
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.decomposition import PCA
 from torch.utils.hipify.hipify_python import preprocessor
 
 # Classificator XGBoost
 from xgboost import XGBClassifier
+
 from imblearn.over_sampling import SMOTE
 from imblearn.combine import SMOTETomek
 from imblearn.pipeline import Pipeline as ImbPipeline
@@ -267,7 +270,44 @@ def del_missing(df: pd.DataFrame) -> pd.DataFrame:
 
     return df
 
+def mrmr_selection(X, y, k=10):
+    X = pd.DataFrame(X)
+    y = pd.Series(y)
 
+    # Compute relevance for all features
+    relevance = mutual_info_classif(X, y)
+
+    selected = []
+    remaining = list(X.columns)
+
+    # Step 1: pick most relevant
+    first = remaining[np.argmax(relevance)]
+    selected.append(first)
+    remaining.remove(first)
+
+    # Step 2–k: iteratively select features maximizing MIQ
+    for _ in range(k - 1):
+        scores = {}
+        for f in remaining:
+            # relevance term
+            rel = relevance[X.columns.get_loc(f)]
+
+            # redundancy term (average MI with already selected features)
+            if len(selected) > 0:
+                red = np.mean(mutual_info_regression(X[selected], X[f]))
+            else:
+                red = 0
+
+            # MIQ: relevance / redundancy
+            score = rel / (red + 1e-9)  # avoid division by zero
+            scores[f] = (score, rel, red)
+
+        # choose feature with highest MIQ score
+        best = max(scores, key=lambda k: scores[k][0])
+        selected.append(best)
+        remaining.remove(best)
+
+    return selected
 def split_data(df: pd.DataFrame, seed: int=42):
     """
     Splits data into Train and Test sets (Test is LOCKED till final eval).
@@ -300,9 +340,11 @@ def get_pipeline(params: dict) -> ImbPipeline:
 
     pipeline = ImbPipeline(steps=[
             ('imputer', SimpleImputer(strategy='median')),
+            #("mrmr", mRMRSelector(k=5)),
             ('scaler', StandardScaler()),
             ('power', PowerTransformer(method='yeo-johnson', standardize=False)),
-            ('smote', SMOTETomek()),
+            ('smote', SMOTETomek(random_state=42)),
+
             #('clf', RandomForestClassifier(**params, class_weight='balanced'))
             ('clf', XGBClassifier(**params, class_weight='balanced'))
         ])
