@@ -1,31 +1,6 @@
 # %%%
-
-#FIXME: Evaluate model
-#FIXME: selector imbalance
-
-
-### FIXME: FIXME: FIXME:
-#FIXME: Columns po transformáciách musia matchnúť pôvodný dataset
-# - model pracuje s columns tak, ako sú problém pri ich skrytom datasete
-
-#TODO: SMOTE VS ADASIN
 # TODO: Model exportovať ako model a separe testing script
 # - augmentace sa nepoužíva pri testovacích dátach
-
-# LAST PUSH DELETED/ALTERED
-# fill_miss_values -> deleted, handled inside the pipeline
-# clip_physiological_values -> deleted, log should be more robust
-# apply_log_transform -> deleted, replaced by LogTransformer class
-# scale_data -> deleted, scaling inside pipeline
-# create_features -> deleted, transformer replaces it
-# xgb_classify -> replaced by train_model (pipeline + Optuna params)
-# ADDED:
-# optuna_objective -> Merges optuna_objective and bayes_optimize (both Optuna wrappers)
-# WORTH TRYING
-# threshold moving
-# Feature selection
-# Trying RF or Logistic regression instead of XGBoost
-
 """
 LIVER DISEASE PREDICTION
 
@@ -36,7 +11,7 @@ Viktor Morovič
 VUT: 257026@vutbr.cz
 
 Filip Sedlár
-VUT:
+VUT: 262751@vutbr.cz
 
 Matúš Smolka
 VUT: 257044@vutbr.cz
@@ -53,25 +28,18 @@ Data folder to be in the same directory as the script.
 # importing dependencies
 # built-in libs
 import os
-import time
 import logging
-from typing import Tuple, List
+from typing import List
 import glob
 
-# NN
-import tqdm
-import shap
-
+import joblib
 # Basic data analytics libraries
 import numpy as np
 import pandas as pd
 import seaborn as sns
 import matplotlib.pyplot as plt
 import matplotlib.image as mpimg
-#from qdm.sklearn.metrics import cohen_kappa_score, matthews_corrcoef
 from sklearn.base import BaseEstimator, TransformerMixin
-# from qdm.pandas.tests.resample.test_resample_api import df_mult
-
 # Principal component analysis
 from sklearn.model_selection import (
     train_test_split,
@@ -79,16 +47,12 @@ from sklearn.model_selection import (
     GridSearchCV,
     cross_val_score
 )
-from sklearn.pipeline import Pipeline
-from sklearn.compose import ColumnTransformer
-from sklearn.impute import KNNImputer, SimpleImputer
-from sklearn.preprocessing import RobustScaler, OneHotEncoder, StandardScaler, PowerTransformer
+from sklearn.impute import SimpleImputer
+from sklearn.preprocessing import StandardScaler, PowerTransformer
 from sklearn.metrics import (
     classification_report,
     confusion_matrix,
-    ConfusionMatrixDisplay,
     roc_auc_score,
-    RocCurveDisplay,
     cohen_kappa_score,
     f1_score,
     accuracy_score,
@@ -96,24 +60,12 @@ from sklearn.metrics import (
     make_scorer,
     roc_curve
 )
-from sklearn.feature_selection import mutual_info_classif
-from sklearn.feature_selection import mutual_info_regression
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.decomposition import PCA
-from torch.utils.hipify.hipify_python import preprocessor
 
 # Classificator XGBoost
 from xgboost import XGBClassifier
-
-from imblearn.over_sampling import SMOTE
 from imblearn.combine import SMOTETomek
 from imblearn.pipeline import Pipeline as ImbPipeline
-from plotly.io import show
 import optuna
-from optuna.visualization import plot_optimization_history
-
-
-# pozrieť jednotlivé scipy moduly pre rýchlejšie načítanie
 
 """
 Features explanation: <br>
@@ -138,12 +90,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
-
 # =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
 #                       TRANSFORMERS
 # =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
-
 class PhysiologicalFeatureEngineer(BaseEstimator, TransformerMixin):
     """
     Custom Scikit-Learn transformer to create clinical features. Preventing data leakage.
@@ -156,22 +105,16 @@ class PhysiologicalFeatureEngineer(BaseEstimator, TransformerMixin):
     def fit(self,X, y=None):
         return self
     def transform(self,X):
-        # Working on a copy to avoid warnings
-        X = X.copy()
+        X = X.copy() # Working on a copy to prevent warnings
         epsilon = 1e-6 # Future prevention to division by zero
-
         if isinstance(X, pd.DataFrame):
-            # AST/ALT ratio
             if 'Sgot' in X.columns and 'Sgpt' in X.columns:
                 X['AST_ALT_Ratio'] = X['Sgot'] / (X['Sgpt'] + epsilon)
-
             if 'TP' in X.columns and 'ALB' in X.columns:
                 X['Globulin_Calc'] = X['TP']-X['ALB']
             if 'ALB' in X.columns and 'Globulin_Calc' in X.columns:
                 X['AG_Ratio_Recalc'] = X['ALB'] / (X['Globulin_Calc'] + epsilon)
-
         return X
-
 class LogTransformer(BaseEstimator, TransformerMixin):
     """
     Applies Log1p transformation to reduce skewness in data.
@@ -193,7 +136,6 @@ class LogTransformer(BaseEstimator, TransformerMixin):
 # =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
 #                       CORE FUNCS
 # =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
-
 def load_file(filename:str) -> pd.DataFrame:
     """
     Loads CSV data
@@ -203,14 +145,12 @@ def load_file(filename:str) -> pd.DataFrame:
     try:
         if not os.path.exists(filename):
             raise FileNotFoundError(f'File {filename} was not found.')
-
         df = pd.read_csv(filename)
         logger.info(f'File {filename} loaded successfully. Shape: {df.shape}')
         return df
     except Exception as e:
         logger.error(f'Error loading file: {e}')
         return None
-
 def preprocess_data(df: pd.DataFrame) -> pd.DataFrame:
     """
     Performes cleaning and initial mapping
@@ -220,7 +160,6 @@ def preprocess_data(df: pd.DataFrame) -> pd.DataFrame:
     :param df: Raw DF
     :return: Cleaned DF
     """
-
     logger.info('Preprocessing data and cleaning physiological errors...')
     df = df.copy()
     # Target mapping
@@ -234,7 +173,6 @@ def preprocess_data(df: pd.DataFrame) -> pd.DataFrame:
     # Removing impossible negatives
     numerical_cols = df.select_dtypes(include=[np.number]).columns
     feature_cols = [col for col in df.columns if col not in ['Selector']]
-
     for col in feature_cols:
         neg_count = (df[col] < 0).sum()
         if neg_count > 0:
@@ -243,9 +181,7 @@ def preprocess_data(df: pd.DataFrame) -> pd.DataFrame:
     # Age check
     if 'Age' in df.columns:
         df.loc[df['Age'] > 120, 'Age'] = np.nan # Oldest ever found 122
-
     return df
-
 def del_missing(df: pd.DataFrame) -> pd.DataFrame:
     """
     Removes entries with missing Selector
@@ -269,45 +205,6 @@ def del_missing(df: pd.DataFrame) -> pd.DataFrame:
     logger.info(f'Current number of entries in dataset: {new_count}')
 
     return df
-
-def mrmr_selection(X, y, k=10):
-    X = pd.DataFrame(X)
-    y = pd.Series(y)
-
-    # Compute relevance for all features
-    relevance = mutual_info_classif(X, y)
-
-    selected = []
-    remaining = list(X.columns)
-
-    # Step 1: pick most relevant
-    first = remaining[np.argmax(relevance)]
-    selected.append(first)
-    remaining.remove(first)
-
-    # Step 2–k: iteratively select features maximizing MIQ
-    for _ in range(k - 1):
-        scores = {}
-        for f in remaining:
-            # relevance term
-            rel = relevance[X.columns.get_loc(f)]
-
-            # redundancy term (average MI with already selected features)
-            if len(selected) > 0:
-                red = np.mean(mutual_info_regression(X[selected], X[f]))
-            else:
-                red = 0
-
-            # MIQ: relevance / redundancy
-            score = rel / (red + 1e-9)  # avoid division by zero
-            scores[f] = (score, rel, red)
-
-        # choose feature with highest MIQ score
-        best = max(scores, key=lambda k: scores[k][0])
-        selected.append(best)
-        remaining.remove(best)
-
-    return selected
 def split_data(df: pd.DataFrame, seed: int=42):
     """
     Splits data into Train and Test sets (Test is LOCKED till final eval).
@@ -327,7 +224,6 @@ def split_data(df: pd.DataFrame, seed: int=42):
 
     logger.info(f'Train Shape: {X_train.shape}, Test Shape: {X_test.shape}')
     return X_train, X_test, y_train, y_test
-
 
 def get_pipeline(params: dict) -> ImbPipeline:
     """
@@ -375,9 +271,9 @@ def train_model(X_train, y_train, best_params):
         final_params)
     """
     pipeline.fit(X_train, y_train)
+    joblib.dump(pipeline, "model.pkl")
 
     return pipeline
-
 
 def evaluate_model(
         model=None,
@@ -402,7 +298,6 @@ def evaluate_model(
     :param n_splits: Number of folds for CV (default 10).
     :param seed: Random seed.
     """
-
     if mode == "cv":
         logger.info(f"Starting {n_splits}-Fold Stratified CV evaluation...")
         skf = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
@@ -417,13 +312,11 @@ def evaluate_model(
             'subsample': [0.7, 0.9, 1.0],
             'colsample_bytree': [0.7, 0.9, 1.0]
         }
-
         scale_pos_weight = (y == 0).sum() / (y == 1).sum()
         model_proto = XGBClassifier(
             random_state=seed, n_jobs=-1, eval_metric='logloss',
             scale_pos_weight=scale_pos_weight
         )
-
         for fold, (train_idx, val_idx) in enumerate(skf.split(X, y)):
             logger.info(f"--- Fold {fold+1}/{n_splits} ---")
             train_x, val_x = X.iloc[train_idx], X.iloc[val_idx]
@@ -443,6 +336,8 @@ def evaluate_model(
                     best_mcc, best_thresh = mcc_t, t
 
             y_pred_best = (y_proba > best_thresh).astype(int)
+            filename = f"{"C:/Users/MSI/Documents/skola/UMI/uim_liver_disease_prediction"}/confusion_fold_{fold}.png"
+            save_confusion_matrix(y_val, y_pred_best, filename)
             acc = accuracy_score(y_val, y_pred_best)
 
             fold_mccs.append(best_mcc)
@@ -510,7 +405,6 @@ def evaluate_model(
         plt.title("ROC Curve")
         plt.legend()
         plt.show()
-
 
 def graph_data(df: pd.DataFrame) -> None:
     """
@@ -615,7 +509,6 @@ def graph_data(df: pd.DataFrame) -> None:
     plt.show()
     return None
 
-
 def optuna_optimize(
         X: pd.DataFrame,
         y: pd.Series,
@@ -689,7 +582,6 @@ def optuna_optimize(
 
     return study.best_params, study.best_value
 
-
 def bootstrap_ci(y_true, y_pred, metric_func, n_bootstraps=1000):
     """
     Calcs 95% confidence interval using Bootstrapping.
@@ -723,8 +615,6 @@ def bootstrap_ci(y_true, y_pred, metric_func, n_bootstraps=1000):
     upper = sorted_scores[int(0.975 * len(sorted_scores))]
 
     return lower, upper
-
-
 
 def plot_feature_importance(
     importances_df: pd.DataFrame
@@ -763,7 +653,6 @@ def plot_feature_importance(
     plt.show()
     
     return None
-
 
 def plot_confusion_matrix(
     y_true,
@@ -810,7 +699,6 @@ def plot_confusion_matrix(
     plt.show()
     
     return None
-
 
 def save_confusion_matrix(
     y_true:pd.Series,
@@ -860,7 +748,6 @@ def save_confusion_matrix(
     
     return None    
 
-
 def show_all_matrices(n_splits=10) -> None:
     """
     displayes saved confusion matrices in 2 row format
@@ -897,7 +784,6 @@ def show_all_matrices(n_splits=10) -> None:
     
     return None
 
-
 def cleanup_confusion_matrices() -> None:
     """
     goes through all the files in project folder and deletes saved confusion matrices
@@ -918,9 +804,6 @@ def cleanup_confusion_matrices() -> None:
 
     logger.info("Cleanup complete.")
     return None
-
-
-
 
 # =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
 #                       Main Script
@@ -951,12 +834,14 @@ if __name__ == "__main__":
         best_params, best_value = optuna_optimize(X_train, y_train, n_trials=50,metric='mcc')
 
         # 6. Train Final Model
-        final_pipeline = train_model(X_train, y_train, best_params)
+        final_model = train_model(X_train, y_train, best_params)
 
         # CV evaluation
         evaluate_model(X=X_train, y=y_train, mode="cv", n_splits=10)
         # Final test evaluation with bootstrap CI
-        evaluate_model(model=final_pipeline, X_test=X_test, y_test=y_test, mode="test")
+        evaluate_model(model=final_model, X_test=X_test, y_test=y_test, mode="test")
+        # === Save model with pickle ===
+
 
 
 
