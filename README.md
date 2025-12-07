@@ -52,9 +52,12 @@ Derived features include:
 ## Installation
 
 1. Clone the repository:
+````
+
 ```bash
 git clone <repository-url>
 cd <repository-folder>
+
 ````
 
 2. Install dependencies:
@@ -161,3 +164,4 @@ The final model evaluation on the test set includes bootstrapped 95% confidence 
 * [Scikit-Learn Pipelines](https://scikit-learn.org/stable/modules/compose.html)
 * [Optuna Hyperparameter Optimization](https://optuna.org/)
 * [Imbalanced-Learn Library](https://imbalanced-learn.org/)
+
