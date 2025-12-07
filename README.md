@@ -1,5 +1,3 @@
-Here’s a polished `README.md` for your project with clear sections and Markdown formatting:
-
 ````markdown
 # Liver Disease Prediction
 
@@ -164,4 +162,5 @@ The final model evaluation on the test set includes bootstrapped 95% confidence 
 * [Scikit-Learn Pipelines](https://scikit-learn.org/stable/modules/compose.html)
 * [Optuna Hyperparameter Optimization](https://optuna.org/)
 * [Imbalanced-Learn Library](https://imbalanced-learn.org/)
+
 
