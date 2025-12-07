@@ -1,4 +1,4 @@
-````markdown
+
 # Liver Disease Prediction
 
 This project implements a **machine learning pipeline for liver disease prediction**. It was created as part of the BPC-UIM (Artificial Intelligence in Medicine) course at VUT Brno.
@@ -50,13 +50,13 @@ Derived features include:
 ## Installation
 
 1. Clone the repository:
-````
+
 
 ```bash
 git clone <repository-url>
 cd <repository-folder>
 
-````
+```
 
 2. Install dependencies:
 
@@ -162,5 +162,6 @@ The final model evaluation on the test set includes bootstrapped 95% confidence 
 * [Scikit-Learn Pipelines](https://scikit-learn.org/stable/modules/compose.html)
 * [Optuna Hyperparameter Optimization](https://optuna.org/)
 * [Imbalanced-Learn Library](https://imbalanced-learn.org/)
+
 
 
