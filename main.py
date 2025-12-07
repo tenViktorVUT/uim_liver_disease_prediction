@@ -91,49 +91,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
-#                       TRANSFORMERS
-# =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
-class PhysiologicalFeatureEngineer(BaseEstimator, TransformerMixin):
-    """
-    Custom Scikit-Learn transformer to create clinical features. Preventing data leakage.
-    Creates:
-        AST/ALT ratio
-        Globulin (Total Protein - Albumin)
-        A/G ratio recalculation as failsafe check
-    """
-
-    def fit(self,X, y=None):
-        return self
-    def transform(self,X):
-        X = X.copy() # Working on a copy to prevent warnings
-        epsilon = 1e-6 # Future prevention to division by zero
-        if isinstance(X, pd.DataFrame):
-            if 'Sgot' in X.columns and 'Sgpt' in X.columns:
-                X['AST_ALT_Ratio'] = X['Sgot'] / (X['Sgpt'] + epsilon)
-            if 'TP' in X.columns and 'ALB' in X.columns:
-                X['Globulin_Calc'] = X['TP']-X['ALB']
-            if 'ALB' in X.columns and 'Globulin_Calc' in X.columns:
-                X['AG_Ratio_Recalc'] = X['ALB'] / (X['Globulin_Calc'] + epsilon)
-        return X
-class LogTransformer(BaseEstimator, TransformerMixin):
-    """
-    Applies Log1p transformation to reduce skewness in data.
-    """
-    def __init__(self, cols=None):
-        self.cols = cols
-    def fit(self, X, y=None):
-        return self
-    def transform(self, X):
-        X = X.copy()
-        if isinstance(X, pd.DataFrame):
-            target_cols = self.cols if self.cols else X.columns
-            for col in target_cols:
-                if col in X.columns:
-                    # Only log positive vals
-                    X[col] = np.log1p(X[col].clip(lower=0))
-        return X
-
-# =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
 #                       CORE FUNCS
 # =-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=-=
 def load_file(filename:str) -> pd.DataFrame:
@@ -251,14 +208,14 @@ def train_model(X_train, y_train, best_params):
     """
     Trains the final Pipeline on the full training set using best params.
     Replaces "xgb_classify" func.
-    :param X_train:
-    :param y_train:
-    :param best_params:
-    :return:
+    :param X_train: train set data
+    :param y_train: train set labels
+    :param best_params: optimized hyperparameters
+    :return: model named pipeline
     """
     logger.info('Training final model with best parameters...')
 
-     #Set up for XGBooster
+    #Set up for XGBooster
     final_params = best_params.copy()
     final_params.update({'n_jobs':-1, 'random_state': 42, 'eval_metric': 'logloss'})
     pipeline = get_pipeline(final_params)
@@ -524,7 +481,7 @@ def optuna_optimize(
     :param y: Training labels
     :param n_trials: Number of Optuna trials
     :param metric: Metric to optimize ("mcc", "roc_auc", "f1")
-    :return: best_params, best_value
+    :return: best_params, best_value returns optimized prameters and best value
     """
     logger.info(f"Starting Optuna Optimization ({n_trials} trials) optimizing {metric.upper()}...")
 
@@ -543,18 +500,7 @@ def optuna_optimize(
             'n_jobs': -1,
             'random_state': 42
         }
-        """
-        # PARAMS for Random Forest
-        params = {
-            'n_estimators': trial.suggest_int('n_estimators', 100, 500),
-            'max_depth': trial.suggest_int('max_depth', 3, 15),
-            'min_samples_split': trial.suggest_int('min_samples_split', 2, 20),
-            'min_samples_leaf': trial.suggest_int('min_samples_leaf', 1, 10),
-            'max_features': trial.suggest_categorical('max_features', ['sqrt', 'log2']),
-            'n_jobs': -1,
-            'random_state': 42
-        }
-        """
+
         pipeline = get_pipeline(params)
         cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
 
@@ -582,39 +528,6 @@ def optuna_optimize(
 
     return study.best_params, study.best_value
 
-def bootstrap_ci(y_true, y_pred, metric_func, n_bootstraps=1000):
-    """
-    Calcs 95% confidence interval using Bootstrapping.
-    Proving if model's performance is statistically significant.
-    :param y_true:
-    :param y_pred:
-    :param metric_func:
-    :param n_bootstraps:
-    :return:
-    """
-    bootstrapped_scores =[]
-    rng = np.random.RandomState(42)
-
-    y_true = np.array(y_true)
-    y_pred = np.array(y_pred)
-
-    for i in range(n_bootstraps):
-        # Randomly resampling indices with replacement
-        indices = rng.randint(0,len(y_pred), len(y_pred))
-        if len(np.unique(y_true[indices])) < 2:
-            continue # Skipping those who doesnt have both classes
-
-        score = metric_func(y_true[indices], y_pred[indices])
-        bootstrapped_scores.append(score)
-
-    sorted_scores = np.array(bootstrapped_scores)
-    sorted_scores.sort()
-
-    # 2.5th and 97.5th percentile
-    lower = sorted_scores[int(0.025 * len(sorted_scores))]
-    upper = sorted_scores[int(0.975 * len(sorted_scores))]
-
-    return lower, upper
 
 def plot_feature_importance(
     importances_df: pd.DataFrame
@@ -840,8 +753,3 @@ if __name__ == "__main__":
         evaluate_model(X=X_train, y=y_train, mode="cv", n_splits=10)
         # Final test evaluation with bootstrap CI
         evaluate_model(model=final_model, X_test=X_test, y_test=y_test, mode="test")
-        # === Save model with pickle ===
-
-
-
-
